@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>つみあげ — 操作のテスト</title>
+<!--
+  画面を実際に操作して確かめるテスト（ブラウザ版で実行。データはテスト用のブラウザに作られる）
+  file:// どうしで中身を触るため、Edge/Chrome を --allow-file-access-from-files 付きで開く必要があります。
+-->
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 16px; }
+  iframe { width: 390px; height: 700px; border: 1px solid #ccc; }
+  .PASS { color: #0a7a0a; } .FAIL { color: #c4312f; font-weight: bold; }
+</style>
+</head>
+<body>
+<pre id="out">実行中…</pre>
+<iframe id="app" src="../src/index.html#/timer"></iframe>
+<script>
+(async () => {
+  const results = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const frame = document.getElementById('app');
+  await new Promise((r) => frame.addEventListener('load', r, { once: true }));
+  const errors = [];
+  async function step(name, fn) {
+    try { await fn(); results.push(['PASS', name, '']); } catch (e) { results.push(['FAIL', name, e.message]); }
+  }
+  const ok = (v, m) => { if (!v) throw new Error(m || 'false'); };
+
+  // まっさらな状態から始める
+  frame.contentWindow.localStorage.clear();
+  frame.contentWindow.location.reload();
+  await new Promise((r) => frame.addEventListener('load', r, { once: true }));
+  const W = frame.contentWindow;
+  const D = frame.contentDocument;
+  W.addEventListener('error', (e) => errors.push(e.message));
+  W.confirm = () => true;
+  W.alert = (m) => errors.push(`alert: ${m}`);
+  const q = (sel) => D.querySelector(sel);
+  const qa = (sel) => [...D.querySelectorAll(sel)];
+  const store = () => W.eval('Store');
+  const clickEl = async (el, label) => { if (!el) throw new Error(`見つからない：${label}`); el.click(); await sleep(60); };
+  const setField = (name, value) => {
+    const el = D.querySelector(`#dialog [name="${name}"]`);
+    if (!el) throw new Error(`入力欄がない：${name}`);
+    if (el.type === 'checkbox' || el.type === 'radio') el.checked = value; else el.value = value;
+  };
+  const send = async () => { D.querySelector('#dialog form').requestSubmit(); await sleep(60); };
+  // 人が入力したときと同じように、イベントも起こす
+  const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new W.Event('input', { bubbles: true })); };
+  const toggle = (el, checked) => { el.checked = checked; el.dispatchEvent(new W.Event('change', { bubbles: true })); };
+  const chip = (name) => qa('.chip').find((b) => b.textContent.trim() === name);
+  const recBy = (text) => qa('.rec').find((b) => b.querySelector('.rec__subject').textContent === text);
+
+  await step('最初は6科目のボタンが出る', async () => {
+    ok(qa('.chip').length === 6, `ボタン ${qa('.chip').length}個`);
+  });
+
+  await step('科目ボタンは押すたびに、えらぶ／外すが切りかわる', async () => {
+    ok(chip('HTML').getAttribute('aria-pressed') === 'true', '最初はHTMLがえらばれている');
+    await clickEl(chip('CSS'), 'CSS');
+    ok(chip('HTML').getAttribute('aria-pressed') === 'true' && chip('CSS').getAttribute('aria-pressed') === 'true', '2つえらべていない');
+    await clickEl(chip('HTML'), 'HTML');
+    ok(chip('HTML').getAttribute('aria-pressed') === 'false', 'HTMLが外れていない');
+    await clickEl(chip('CSS'), 'CSS');
+    ok(q('[data-action="start"]').disabled, '何もえらんでいないのにスタートできる');
+    ok(q('.stage__status').textContent.includes('えらんでください'), '案内が出ていない');
+    await clickEl(chip('CSS'), 'CSS');
+  });
+
+  await step('科目をえらんでスタート → 計測中になる', async () => {
+    await clickEl(q('[data-action="start"]'), 'スタート');
+    ok(q('.stage--running'), '計測中の見た目になっていない');
+    ok(JSON.stringify(store().state.timer.subjectIds) === '["sub_css"]', `科目がちがう ${store().state.timer.subjectIds}`);
+  });
+
+  await step('一時停止 → 再開', async () => {
+    await clickEl(q('[data-action="pause"]'), '一時停止');
+    ok(q('.stage--paused'), '一時停止になっていない');
+    await clickEl(q('[data-action="resume"]'), '再開');
+    ok(q('.stage--running'), '再開していない');
+  });
+
+  await step('終了して記録 → 記録が1件増え、タイマーが止まる', async () => {
+    // 1時間5分たったことにする
+    W.eval(`Store.setTimer({ ...Store.state.timer, elapsedMs: 65 * 60 * 1000, runningSince: Date.now(), startedAt: Date.now() - 65 * 60 * 1000 })`);
+    await sleep(60);
+    await clickEl(q('[data-action="stop"]'), '終了して記録');
+    ok(D.querySelector('#dialog').open, 'ダイアログが開いていない');
+    ok(D.querySelector('#dialog [name="h"]').value === '1' && D.querySelector('#dialog [name="m"]').value === '5', '時間の初期値がちがう');
+    setField('memo', 'Gridの練習 <b>太字</b>');
+    await send();
+    ok(!D.querySelector('#dialog').open, 'ダイアログが閉じていない');
+    ok(store().state.timer.state === 'idle', 'タイマーが止まっていない');
+    const s = store().state.sessions;
+    ok(s.length === 1 && s[0].subjectId === 'sub_css' && s[0].seconds >= 3900 && s[0].seconds < 3910, `記録がおかしい ${JSON.stringify(s)}`);
+    ok(q('.rec__memo') && q('.rec__memo').textContent === 'Gridの練習 <b>太字</b>', 'メモがそのまま表示されていない');
+    ok(q('#toast').textContent.includes('記録しました'), 'お知らせが出ていない');
+  });
+
+  await step('今日の合計に反映される', async () => {
+    ok(q('.today .hero-num').textContent.replace(/\s/g, '') === '1時間5分', `今日の合計：${q('.today .hero-num').textContent}`);
+  });
+
+  await step('記録せずに終わる', async () => {
+    await clickEl(q('[data-action="start"]'), 'スタート');
+    await clickEl(q('[data-action="stop"]'), '終了して記録');
+    await clickEl(D.querySelector('#dialog [data-action="discard"]'), '記録せずに終わる');
+    ok(store().state.timer.state === 'idle', 'タイマーが止まっていない');
+    ok(store().state.sessions.length === 1, '記録が増えてしまった');
+  });
+
+  await step('ごほうびを追加 → すでに届いていたら達成のお知らせ → 受け取る', async () => {
+    W.location.hash = '#/rewards';
+    await sleep(80);
+    await clickEl(q('[data-action="add-reward"]'), '追加');
+    setField('title', 'コンビニスイーツ');
+    setField('hours', '1');
+    await send();
+    await sleep(400);
+    const dlg = D.querySelector('#dialog');
+    ok(dlg.open && dlg.textContent.includes('ごほうび達成'), '達成のお知らせが出ていない');
+    await send();
+    ok(store().state.rewards[0].claimedAt > 0, '受け取りが記録されていない');
+    ok(q('.road__item.is-claimed'), '受け取り済みの見た目になっていない');
+  });
+
+  await step('まだ届かないごほうびは、進み具合が出る', async () => {
+    await clickEl(q('[data-action="add-reward"]'), '追加');
+    setField('title', '本を1冊');
+    setField('hours', '10');
+    setField('subjectId', 'sub_css');
+    await send();
+    await sleep(400);
+    ok(!D.querySelector('#dialog').open, '達成していないのにお知らせが出た');
+    ok(q('.road__item.is-next .meter'), '進み具合のバーがない');
+    ok(q('.road__item.is-next .tag').textContent.includes('CSSだけ'), '科目の印がない');
+  });
+
+  await step('入力ミスはその場で知らせる', async () => {
+    await clickEl(q('[data-action="add-reward"]'), '追加');
+    setField('title', '');
+    setField('hours', '5');
+    await send();
+    const err = D.querySelector('#dialog .form-error');
+    ok(D.querySelector('#dialog').open && !err.hidden && err.textContent.includes('内容'), 'エラーが出ていない');
+    await clickEl(D.querySelector('#dialog [data-action="close-dialog"]'), 'キャンセル');
+  });
+
+  await step('科目を追加 → タイマーのボタンに出る', async () => {
+    W.location.hash = '#/settings';
+    await sleep(80);
+    await clickEl(q('[data-action="add-subject"]'), '科目を追加');
+    setField('name', 'WordPress');
+    await send();
+    W.location.hash = '#/timer';
+    await sleep(80);
+    ok(qa('.chip').some((b) => b.textContent.includes('WordPress')), 'ボタンが増えていない');
+  });
+
+  await step('科目の並べかえ', async () => {
+    W.location.hash = '#/settings';
+    await sleep(80);
+    const before = store().subjects().map((s) => s.name);
+    await clickEl(qa('[data-action="move-subject"][data-dir="-1"]').pop(), '上へ');
+    const after = store().subjects().map((s) => s.name);
+    ok(after[after.length - 2] === 'WordPress' && after[after.length - 1] === before[before.length - 2], `並び：${after.join(',')}`);
+  });
+
+  await step('科目を非表示にすると、タイマーのボタンから消える', async () => {
+    const id = store().subjects().find((s) => s.name === 'WordPress').id;
+    await clickEl(q(`[data-action="edit-subject"][data-id="${id}"]`), '編集');
+    setField('visible', false);
+    await send();
+    W.location.hash = '#/timer';
+    await sleep(80);
+    ok(!qa('.chip').some((b) => b.textContent.includes('WordPress')), 'まだ出ている');
+  });
+
+  let groupId = '';
+  await step('複数の科目でスタート → 終了すると、時間が等分されて1件にまとまる', async () => {
+    await clickEl(chip('HTML'), 'HTML');
+    await clickEl(chip('JavaScript'), 'JavaScript');
+    await clickEl(q('[data-action="start"]'), 'スタート');
+    ok(JSON.stringify(store().state.timer.subjectIds) === '["sub_html","sub_css","sub_js"]', `科目 ${store().state.timer.subjectIds}`);
+    ok(q('.stage__subject').textContent.includes('HTML・CSS・JavaScript'), '計測中の科目の表示');
+    W.eval(`Store.setTimer({ ...Store.state.timer, elapsedMs: 90 * 60 * 1000, runningSince: Date.now(), startedAt: Date.now() - 2 * 3600 * 1000 })`);
+    await sleep(60);
+    await clickEl(q('[data-action="stop"]'), '終了して記録');
+    const rows = [...D.querySelectorAll('#dialog [data-split-id]')];
+    ok(!D.querySelector('#dialog [data-split]').hidden && rows.length === 3, '内訳が出ていない');
+    ok(rows.every((el) => el.value === '30'), `等分されていない ${rows.map((el) => el.value)}`);
+    await send();
+    const group = store().state.sessions.filter((s) => s.groupId);
+    groupId = group[0] && group[0].groupId;
+    ok(group.length === 3 && group.every((s) => s.groupId === groupId && s.seconds >= 1800 && s.seconds <= 1802), `記録 ${JSON.stringify(group)}`);
+    ok(recBy('HTML・CSS・JavaScript'), '一覧に1件として出ていない');
+    ok(recBy('HTML・CSS・JavaScript').querySelector('.rec__split'), '内訳が出ていない');
+    ok(q('.today .hero-num').textContent.replace(/\s/g, '') === '2時間35分', `今日の合計：${q('.today .hero-num').textContent}`);
+  });
+
+  await step('まとめた記録の内訳を直すと、勉強時間が合計になる', async () => {
+    await clickEl(recBy('HTML・CSS・JavaScript'), 'まとめた記録');
+    typeInto(D.querySelector('#dialog [data-split-id="sub_css"]'), '50');
+    ok(D.querySelector('#dialog [name="h"]').value === '1' && D.querySelector('#dialog [name="m"]').value === '50', '合計が変わっていない');
+    await send();
+    const secs = ['sub_html', 'sub_css', 'sub_js'].map((id) => store().state.sessions.find((s) => s.groupId === groupId && s.subjectId === id).seconds);
+    ok(JSON.stringify(secs) === '[1800,3000,1800]', `秒数 ${secs}`);
+  });
+
+  await step('まとめた記録から科目を外すと、その分が消えて等分し直される', async () => {
+    await clickEl(recBy('HTML・CSS・JavaScript'), 'まとめた記録');
+    toggle(D.querySelector('#dialog input[name="subject"][value="sub_js"]'), false);
+    const rows = [...D.querySelectorAll('#dialog [data-split-id]')];
+    ok(rows.length === 2 && rows.every((el) => el.value === '55'), `内訳 ${rows.map((el) => el.value)}`);
+    await send();
+    const group = store().state.sessions.filter((s) => s.groupId === groupId);
+    ok(group.length === 2 && group.every((s) => s.seconds === 3300), `記録 ${JSON.stringify(group)}`);
+    ok(recBy('HTML・CSS'), '一覧の表示が変わっていない');
+  });
+
+  await step('まとめた記録を削除すると、科目の分もまとめて消える', async () => {
+    await clickEl(recBy('HTML・CSS'), 'まとめた記録');
+    await clickEl(D.querySelector('#dialog [data-action="delete-session"]'), '削除');
+    ok(!store().state.sessions.some((s) => s.groupId === groupId), 'まだ残っている');
+    ok(store().state.sessions.length === 1, `残りの記録 ${store().state.sessions.length}`);
+  });
+
+  await step('記録を編集（時間を直す）', async () => {
+    await clickEl(recBy('CSS'), '記録');
+    setField('h', '2');
+    setField('m', '0');
+    D.querySelector('#dialog [name="h"]').dispatchEvent(new W.Event('input', { bubbles: true }));
+    await send();
+    ok(store().state.sessions[0].seconds === 7200, `秒数：${store().state.sessions[0].seconds}`);
+  });
+
+  await step('記録画面：週・月・年・全期間・前の期間に切りかえても表示できる', async () => {
+    W.location.hash = '#/stats';
+    await sleep(80);
+    for (const p of ['day', 'week', 'month', 'year', 'all']) {
+      await clickEl(q(`[data-action="period"][data-value="${p}"]`), p);
+      ok(q('.summary .hero-num'), `${p} の合計がない`);
+      if (p !== 'all') {
+        await clickEl(q('[data-action="period-prev"]'), '前へ');
+        ok(q('[data-action="period-now"]'), '戻るボタンがない');
+        await clickEl(q('[data-action="period-now"]'), '戻る');
+      }
+    }
+    for (const v of ['bar', 'donut', 'text']) {
+      await clickEl(q(`[data-action="breakdown"][data-value="${v}"]`), v);
+      ok(q(v === 'bar' ? '.hbars' : v === 'donut' ? '.donut' : '.table'), `${v} が出ない`);
+    }
+  });
+
+  await step('下のメニューで画面を切りかえられる', async () => {
+    await clickEl(q('#nav a[data-route="rewards"]'), 'ごほうび');
+    ok(q('.rewards') && q('#nav a[data-route="rewards"]').getAttribute('aria-current') === 'page', 'ごほうび画面にならない');
+    await clickEl(q('.brand'), 'ロゴ');
+    ok(q('.home'), 'タイマー画面に戻らない');
+    await clickEl(q('#nav a[data-route="stats"]'), '記録');
+    ok(q('.stats'), '記録画面にならない');
+  });
+
+  await step('記録を削除', async () => {
+    await clickEl(q('[data-action="edit-session"]'), '記録');
+    await clickEl(D.querySelector('#dialog [data-action="delete-session"]'), '削除');
+    ok(store().state.sessions.length === 0, 'まだ残っている');
+  });
+
+  await step('再読み込みしても残っている（ブラウザに保存されている）', async () => {
+    W.location.reload();
+    await new Promise((r) => frame.addEventListener('load', r, { once: true }));
+    const s = frame.contentWindow.eval('Store');
+    ok(s.state.rewards.length === 2, 'ごほうびが消えた');
+    ok(s.subjects(true).some((x) => x.name === 'WordPress'), '科目が消えた');
+  });
+
+  await step('途中でエラーが出ていない', async () => {
+    ok(errors.length === 0, errors.join(' / '));
+  });
+
+  const pass = results.filter((r) => r[0] === 'PASS').length;
+  document.getElementById('out').innerHTML = results
+    .map(([s, n, m]) => `<span class="${s}">${s}</span> ${n}${m ? ' — ' + m.replace(/</g, '&lt;') : ''}`)
+    .join('\n') + `\n\nSUMMARY pass=${pass} fail=${results.length - pass}`;
+})();
+</script>
+</body>
+</html>

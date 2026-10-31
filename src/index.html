@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3f8fe">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="つみあげ">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>つみあげ｜勉強時間の記録</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='21' width='23' height='6.5' rx='2' fill='%23004fc8'/%3E%3Crect x='7.5' y='13' width='20' height='6.5' rx='2' fill='%230b7bec'/%3E%3Crect x='4' y='5' width='16' height='6.5' rx='2' fill='%2300a3ec'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <a class="brand" href="#/timer"><span id="brand-mark" class="brand__mark"></span><span class="brand__name">つみあげ</span></a>
+    <nav class="nav" id="nav" aria-label="メニュー"></nav>
+    <button type="button" class="sync" id="sync" data-action="sync-click"></button>
+  </aside>
+  <main class="view" id="view"></main>
+</div>
+
+<dialog id="dialog" aria-labelledby="dlg-title"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="tip" id="tip" hidden></div>
+<input type="file" id="import-file" accept=".json,application/json" hidden>
+<noscript><p class="noscript">このアプリを使うには、JavaScriptをオンにしてください。</p></noscript>
+
+<script src="js/config.js"></script>
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

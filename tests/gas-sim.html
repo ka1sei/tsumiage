@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>つみあげ — スプレッドシート版の同期テスト</title>
+<!--
+  画面側（store.js）と Apps Script 側（Code.gs）を、作り物のスプレッドシートでつないで確かめるテスト。
+  google.script.run の代わりに、少し遅れて Code.gs の sync を呼ぶ作り物を使う。
+-->
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+  .PASS { color: #0a7a0a; } .FAIL { color: #c4312f; font-weight: bold; }
+</style>
+</head>
+<body>
+<pre id="out">実行中…</pre>
+<script src="mocks_gas.js"></script>
+<script src="_code_gs.js"></script>
+<script>
+  localStorage.clear();
+  // google.script.run の作り物（データはJSONで受け渡しして、本物と同じく日付などは送れない）
+  const net = { online: true, calls: 0 };
+  function runner(onOk, onFail) {
+    return new Proxy({}, {
+      get(_, name) {
+        if (name === 'withSuccessHandler') return (fn) => runner(fn, onFail);
+        if (name === 'withFailureHandler') return (fn) => runner(onOk, fn);
+        return (...args) => setTimeout(() => {
+          net.calls += 1;
+          if (!net.online) { if (onFail) onFail(new Error('NetworkError: 接続できません')); return; }
+          try {
+            const res = GAS[name](...JSON.parse(JSON.stringify(args)));
+            if (onOk) onOk(JSON.parse(JSON.stringify(res)));
+          } catch (e) { if (onFail) onFail(e); }
+        }, 40);
+      },
+    });
+  }
+  window.google = { script: { run: runner(null, null) } };
+</script>
+<script src="../src/js/util.js"></script>
+<script src="../src/js/store.js"></script>
+<script>
+(async () => {
+  const results = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const ok = (v, m) => { if (!v) throw new Error(m || 'false'); };
+  async function step(name, fn) {
+    try { await fn(); results.push(['PASS', name, '']); } catch (e) { results.push(['FAIL', name, e.message]); }
+  }
+  const serverSessions = () => GAS.sync([]).sessions;
+
+  await step('スプレッドシート版として動き、最初の同期で6科目が届く', async () => {
+    ok(Store.mode === 'gas', `mode=${Store.mode}`);
+    ok(!Store.ready, '読み込み前は準備中');
+    Store.init();
+    await sleep(200);
+    ok(Store.ready, '準備できていない');
+    ok(Store.subjects().length === 6, `科目 ${Store.subjects().length}`);
+    ok(Store.status.kind === 'synced', `状態 ${Store.status.kind}`);
+    ok(Store.spreadsheetUrl.includes('docs.google.com'), 'スプレッドシートのURLがない');
+  });
+
+  await step('記録を追加すると、少しあとにスプレッドシートへ送られる', async () => {
+    Store.put('sessions', { id: 'ses_g1', subjectId: 'sub_js', start: 1000, end: 61000, seconds: 60, memo: 'a' });
+    ok(Store.pending === 1, '送信待ちになっていない');
+    await sleep(700);
+    ok(Store.pending === 0, `送信待ち ${Store.pending}`);
+    ok(serverSessions().some((s) => s.id === 'ses_g1'), 'スプレッドシートにない');
+  });
+
+  await step('続けて変更しても、まとめて1回で送る', async () => {
+    const before = net.calls;
+    Store.batch(() => {
+      for (let i = 0; i < 5; i += 1) Store.put('sessions', { id: `ses_b${i}`, subjectId: 'sub_js', start: 2000 + i, end: 3000, seconds: 60 });
+    });
+    await sleep(700);
+    ok(net.calls - before === 1, `送った回数 ${net.calls - before}`);
+    ok(serverSessions().length === 6, `件数 ${serverSessions().length}`);
+  });
+
+  await step('ほかの端末の変更を取りこむ', async () => {
+    GAS.sync([{ type: 'put', table: 'sessions', record: { id: 'ses_other', subjectId: 'sub_css', start: 5000, end: 9000, seconds: 240, memo: 'スマホから', deleted: false, updatedAt: Date.now() } }]);
+    Store.sync();
+    await sleep(200);
+    ok(Store.state.sessions.some((s) => s.id === 'ses_other' && s.memo === 'スマホから'), '取りこめていない');
+  });
+
+  await step('ほかの端末で始めたタイマーが見える → こちらで止められる', async () => {
+    GAS.sync([{ type: 'timer', value: { state: 'running', subjectId: 'sub_ps', startedAt: Date.now() - 60000, runningSince: Date.now() - 60000, elapsedMs: 0, updatedAt: Date.now() } }]);
+    Store.sync();
+    await sleep(200);
+    ok(Store.state.timer.state === 'running' && Store.state.timer.subjectId === 'sub_ps', 'タイマーが見えない');
+    Store.setTimer(Store.idleTimer());
+    await sleep(700);
+    ok(GAS.sync([]).timer.state === 'idle', 'スプレッドシート側で止まっていない');
+  });
+
+  await step('つながらないときは、変更をためておいて、あとで送る', async () => {
+    net.online = false;
+    Store.put('sessions', { id: 'ses_off', subjectId: 'sub_html', start: 7000, end: 8000, seconds: 60 });
+    await sleep(700);
+    ok(Store.status.kind === 'error', `状態 ${Store.status.kind}`);
+    ok(Store.pending === 1, `送信待ち ${Store.pending}`);
+    ok(Store.state.sessions.some((s) => s.id === 'ses_off'), '画面からは消えない');
+    const cached = JSON.parse(localStorage.getItem('tsumiage:data:v1'));
+    ok(cached.outbox.length === 1, '送信待ちが端末に保存されていない');
+    net.online = true;
+    Store.sync();
+    await sleep(300);
+    ok(Store.pending === 0 && Store.status.kind === 'synced', '送れていない');
+    ok(serverSessions().some((s) => s.id === 'ses_off'), 'スプレッドシートにない');
+  });
+
+  await step('削除もほかの端末に伝わる', async () => {
+    Store.remove('sessions', 'ses_g1');
+    await sleep(700);
+    ok(!serverSessions().some((s) => s.id === 'ses_g1'), 'スプレッドシートに残っている');
+  });
+
+  await step('まとめて勉強した記録と、複数の科目のタイマーも同期される', async () => {
+    Store.batch(() => {
+      Store.put('sessions', { id: 'ses_grp1', subjectId: 'sub_html', start: 9000, end: 99000, seconds: 45, groupId: 'grp_sim' });
+      Store.put('sessions', { id: 'ses_grp2', subjectId: 'sub_css', start: 9000, end: 99000, seconds: 45, groupId: 'grp_sim' });
+      Store.setTimer({ state: 'running', subjectIds: ['sub_html', 'sub_css'], startedAt: Date.now(), runningSince: Date.now(), elapsedMs: 0 });
+    });
+    await sleep(700);
+    const server = GAS.sync([]);
+    ok(server.sessions.filter((s) => s.groupId === 'grp_sim').length === 2, 'groupId がスプレッドシートに届いていない');
+    ok(JSON.stringify(server.timer.subjectIds) === '["sub_html","sub_css"]', `タイマーの科目 ${JSON.stringify(server.timer.subjectIds)}`);
+    ok(JSON.stringify(Store.state.timer.subjectIds) === '["sub_html","sub_css"]', '同期のあとも画面側で科目が残る');
+    Store.setTimer(Store.idleTimer());
+    await sleep(700);
+  });
+
+  await step('時計が進んでいる端末の変更より、あとの変更が勝つ', async () => {
+    const future = Date.now() + 10 * 60 * 1000;
+    GAS.sync([{ type: 'put', table: 'sessions', record: { id: 'ses_clock', subjectId: 'sub_js', start: 1, end: 2, seconds: 60, memo: '進んだ時計', deleted: false, updatedAt: future } }]);
+    Store.sync();
+    await sleep(200);
+    Store.put('sessions', { id: 'ses_clock', memo: 'あとから直した' });
+    await sleep(700);
+    ok(serverSessions().find((s) => s.id === 'ses_clock').memo === 'あとから直した', '直した内容が負けた');
+  });
+
+  const pass = results.filter((r) => r[0] === 'PASS').length;
+  document.getElementById('out').innerHTML = results
+    .map(([s, n, m]) => `<span class="${s}">${s}</span> ${n}${m ? ' — ' + m.replace(/</g, '&lt;') : ''}`)
+    .join('\n') + `\n\nSUMMARY pass=${pass} fail=${results.length - pass}`;
+})();
+</script>
+</body>
+</html>

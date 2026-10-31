@@ -1,0 +1,14 @@
+{
+  "name": "つみあげ｜勉強時間の記録",
+  "short_name": "つみあげ",
+  "lang": "ja",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f8fe",
+  "theme_color": "#f3f8fe",
+  "icons": [
+    { "src": "icons/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

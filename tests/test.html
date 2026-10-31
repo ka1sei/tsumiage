@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>つみあげ — テスト</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+  .PASS { color: #0a7a0a; }
+  .FAIL { color: #c4312f; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>つみあげ — テスト</h1>
+<pre id="out">実行中…</pre>
+<script>
+  const results = [];
+  function test(name, fn) {
+    try { fn(); results.push(['PASS', name, '']); } catch (e) { results.push(['FAIL', name, e && e.message]); }
+  }
+  function eq(actual, expected, msg) {
+    const a = JSON.stringify(actual);
+    const b = JSON.stringify(expected);
+    if (a !== b) throw new Error(`${msg ? msg + '：' : ''}期待 ${b} ／ 実際 ${a}`);
+  }
+  function ok(v, msg) { if (!v) throw new Error(msg || 'false'); }
+  window.addEventListener('error', (e) => results.push(['FAIL', '読み込みエラー', `${e.message} (${e.filename}:${e.lineno})`]));
+</script>
+<script src="../src/js/util.js"></script>
+<script src="../src/js/store.js"></script>
+<script src="../src/js/charts.js"></script>
+<script src="mocks_gas.js"></script>
+<script src="_code_gs.js"></script>
+<script src="tests.js"></script>
+<script>
+  const pass = results.filter((r) => r[0] === 'PASS').length;
+  const fail = results.length - pass;
+  document.getElementById('out').innerHTML = results
+    .map(([s, n, m]) => `<span class="${s}">${s}</span> ${n}${m ? ' — ' + m.replace(/</g, '&lt;') : ''}`)
+    .join('\n') + `\n\nSUMMARY pass=${pass} fail=${fail}`;
+</script>
+</body>
+</html>

@@ -2,7 +2,6 @@
   "name": "つみあげ｜勉強時間の記録",
   "short_name": "つみあげ",
   "lang": "ja",
-  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f3f8fe",

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>つみあげ — 見るだけの画面の同期テスト</title>
+<!--
+  見る用リンクを開いた人の画面（store.js の「見るだけ」）を、作り物のスプレッドシートでつないで確かめるテスト。
+  fetch の代わりに、少し遅れて Code.gs の doPost を呼ぶ作り物を使う。
+  この端末には「見る用の鍵」だけを覚えさせておき、合言葉は入れない（ホーム画面から開いたときと同じ）。
+-->
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 24px; }
+  .PASS { color: #0a7a0a; } .FAIL { color: #c4312f; font-weight: bold; }
+</style>
+</head>
+<body>
+<pre id="out">実行中…</pre>
+<script src="mocks_gas.js"></script>
+<script src="_code_gs.js"></script>
+<script>
+  localStorage.clear();
+  GAS.setup();
+  const now = Date.now();
+  // 持ち主が保存した記録とタイマー（スプレッドシート側）
+  GAS.sync([
+    { type: 'put', table: 'sessions', record: { id: 'ses_v1', subjectId: 'sub_html', start: now - 7200000, end: now - 5400000, seconds: 1800, memo: '見せていいメモ', updatedAt: 1 } },
+    { type: 'put', table: 'rewards', record: { id: 'rew_v1', title: 'ランチ', hours: 10, updatedAt: 1 } },
+    { type: 'timer', value: { state: 'running', subjectIds: ['sub_css'], startedAt: now - 60000, runningSince: now - 60000, elapsedMs: 0, updatedAt: 2 } },
+  ]);
+
+  // この端末に、持ち主の記録（送っていない変更つき）が残っていても、見るだけの画面はさわらない
+  const ownerCache = JSON.stringify({ v: 1, state: { subjects: [], sessions: [{ id: 'ses_mine', subjectId: 'sub_js', start: 1, end: 2, seconds: 60 }], rewards: [] }, outbox: [{ type: 'put', table: 'sessions', record: { id: 'ses_mine' } }] });
+  localStorage.setItem('tsumiage:data:v1', ownerCache);
+  localStorage.setItem('tsumiage:view-key:v1', GasMock.props.viewKey);
+
+  window.TSUMIAGE_API_URL = 'https://example.invalid/exec';
+  window.TSUMIAGE_TEST_ALLOW_FILE = true;
+  const net = { online: true, bodies: [] };
+  window.fetch = (url, opts) => new Promise((resolve, reject) => setTimeout(() => {
+    if (!net.online) { reject(new TypeError('Failed to fetch')); return; }
+    net.bodies.push(JSON.parse(opts.body));
+    const text = GAS.doPost({ postData: { contents: opts.body } }).getContent();
+    resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(text)) });
+  }, 30));
+</script>
+<script src="../src/js/util.js"></script>
+<script src="../src/js/store.js"></script>
+<script>
+(async () => {
+  const results = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const ok = (v, m) => { if (!v) throw new Error(m || 'false'); };
+  async function step(name, fn) {
+    try { await fn(); results.push(['PASS', name, '']); } catch (e) { results.push(['FAIL', name, e.message]); }
+  }
+
+  await step('鍵を覚えている端末は、見るだけとして開き、記録・メモ・ごほうび・タイマーが届く', async () => {
+    ok(Store.mode === 'view', `mode=${Store.mode}`);
+    ok(!Store.usesToken, '合言葉を求めている');
+    Store.init();
+    await sleep(200);
+    ok(Store.ready && Store.fresh, '読み込めていない');
+    ok(Store.status.kind === 'synced', `状態 ${Store.status.kind}`);
+    const s = Store.state.sessions.find((x) => x.id === 'ses_v1');
+    ok(s && s.memo === '見せていいメモ', 'メモが届いていない');
+    ok(Store.state.rewards.length === 1, 'ごほうびが届いていない');
+    ok(Store.state.timer.state === 'running' && Store.state.timer.subjectIds[0] === 'sub_css', 'タイマーが届いていない');
+    ok(Store.spreadsheetUrl === '', 'スプレッドシートのURLが届いている');
+  });
+
+  await step('送るのは見る用の鍵だけ（合言葉も変更も送らない）', async () => {
+    ok(net.bodies.length >= 1, '送っていない');
+    for (const b of net.bodies) {
+      ok(b.view === GasMock.props.viewKey, '鍵がちがう');
+      ok(!('token' in b) && !('ops' in b), `余計なものを送っている ${JSON.stringify(b)}`);
+    }
+  });
+
+  await step('見るだけの画面からは、記録もタイマーも変えられない', async () => {
+    const before = JSON.stringify(Store.state);
+    const sent = net.bodies.length;
+    Store.put('sessions', { id: 'ses_hack', subjectId: 'sub_js', start: 1, end: 2, seconds: 99999 });
+    Store.remove('sessions', 'ses_v1');
+    Store.setTimer({ state: 'idle' });
+    await sleep(600);
+    ok(JSON.stringify(Store.state) === before, '画面のデータが変わった');
+    ok(Store.pending === 0, '送信待ちがある');
+    ok(net.bodies.length === sent, '何かを送った');
+    const server = GAS.sync([]);
+    ok(!server.sessions.some((x) => x.id === 'ses_hack') && server.sessions.some((x) => x.id === 'ses_v1'), 'スプレッドシートが変わった');
+    ok(server.timer.state === 'running', 'タイマーが止められた');
+  });
+
+  await step('この端末の持ち主の記録（送っていない変更）には、さわらない', async () => {
+    ok(localStorage.getItem('tsumiage:data:v1') === ownerCache, '持ち主の記録が変わった');
+    const viewCache = JSON.parse(localStorage.getItem('tsumiage:view-data:v1') || 'null');
+    ok(viewCache && viewCache.state.sessions.some((x) => x.id === 'ses_v1'), '見るだけの記録を覚えていない');
+    ok(!('outbox' in viewCache), '送信待ちを覚えている');
+  });
+
+  await step('持ち主が勉強を終えると、次の読み込みで「勉強していない」に変わる', async () => {
+    GAS.sync([
+      { type: 'put', table: 'sessions', record: { id: 'ses_v2', subjectId: 'sub_css', start: Date.now() - 60000, end: Date.now(), seconds: 60, updatedAt: 3 } },
+      { type: 'timer', value: { state: 'idle', updatedAt: 4 } },
+    ]);
+    Store.sync();
+    await sleep(200);
+    ok(Store.state.timer.state === 'idle', `タイマー ${Store.state.timer.state}`);
+    ok(Store.state.sessions.some((x) => x.id === 'ses_v2'), '新しい記録が届いていない');
+  });
+
+  await step('つながらないときは、前の記録を出したまま「つながりません」の状態になる', async () => {
+    net.online = false;
+    Store.sync();
+    await sleep(200);
+    ok(Store.status.kind === 'error' && !Store.status.auth, `状態 ${JSON.stringify(Store.status)}`);
+    ok(Store.ready && Store.state.sessions.length === 2, '記録が消えた');
+    net.online = true;
+  });
+
+  await step('見る用の鍵が作り直されたら、覚えていた記録も消して見せない', async () => {
+    GAS.resetViewKey();
+    Store.sync();
+    await sleep(200);
+    ok(Store.status.kind === 'error' && Store.status.auth, `状態 ${JSON.stringify(Store.status)}`);
+    ok(!Store.ready && !Store.fresh, 'まだ表示できる状態');
+    ok(Store.state.sessions.length === 0, '記録が残っている');
+    ok(localStorage.getItem('tsumiage:view-data:v1') === null, '覚えていた記録が残っている');
+    ok(localStorage.getItem('tsumiage:data:v1') === ownerCache, '持ち主の記録まで消えた');
+  });
+
+  const pass = results.filter((r) => r[0] === 'PASS').length;
+  document.getElementById('out').innerHTML = results
+    .map(([s, n, m]) => `<span class="${s}">${s}</span> ${n}${m ? ' — ' + m.replace(/</g, '&lt;') : ''}`)
+    .join('\n') + `\n\nSUMMARY pass=${pass} fail=${results.length - pass}`;
+})();
+</script>
+</body>
+</html>

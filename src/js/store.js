@@ -2,6 +2,7 @@
    つみあげ — データの保存と同期
    - スプレッドシート版：Apps Script を通して Googleスプレッドシートに保存し、
      スマホとパソコンで同じ記録を見られるようにする
+   - 見るだけ：見る用リンク（?view=鍵）で開いた人の画面。読むだけで、何も保存しない
    - ブラウザ版：この端末のブラウザ（localStorage）にだけ保存する
    - デモ：見本のデータを表示する（何も保存しない）
    ========================================================================== */
@@ -30,25 +31,68 @@ const DEFAULT_SUBJECTS = [
   { id: 'sub_figma', name: 'Figma', color: 'violet' },
 ];
 
+/**
+ * どの版として動くかを決める（テストしやすいよう、ここだけ切り出してある）。
+ * 'gas'  ：スプレッドシート版（持ち主）
+ * 'view' ：見るだけ（見る用リンクを開いた人）
+ * 'demo' ：デモ
+ * 'local'：ブラウザ版
+ */
+function pickStoreMode(env) {
+  const none = { useHttp: false, viewKey: '', rememberView: false, forgetView: false };
+  if (env.hasGas) return { ...none, mode: 'gas' };
+  if (env.wantsDemo) return { ...none, mode: 'demo' };
+  // ファイルをダブルクリックして開いたときは、URLが書いてあってもブラウザ版として動かす
+  const httpOk = !!env.apiUrl && (/^https?:$/.test(env.protocol || '') || !!env.allowFile);
+  if (!httpOk) return { ...none, mode: 'local' };
+
+  const params = new URLSearchParams(env.search || '');
+  const fromUrl = (params.get('view') || '').trim();
+  // 見る用リンク（?view=鍵）で開いたとき。ホーム画面から開いても見られるよう、鍵を覚えておく
+  if (fromUrl) return { ...none, mode: 'view', useHttp: true, viewKey: fromUrl, rememberView: true };
+  // ?owner：持ち主として開く（覚えている見る用の鍵は忘れる）
+  if (params.has('owner')) return { ...none, mode: 'gas', useHttp: true, forgetView: true };
+  // 見る用リンクを開いたことがあり、合言葉を入れていない端末
+  if (!env.token && env.storedViewKey) return { ...none, mode: 'view', useHttp: true, viewKey: env.storedViewKey };
+  return { ...none, mode: 'gas', useHttp: true };
+}
+
 const Store = (() => {
   const CACHE_KEY = 'tsumiage:data:v1';
+  const VIEW_CACHE_KEY = 'tsumiage:view-data:v1'; // 見るだけのときは、持ち主の記録とまざらないよう別に覚える
   const TOKEN_KEY = 'tsumiage:token:v1';
+  const VIEW_KEY = 'tsumiage:view-key:v1';
+  const lsGet = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* 保存できなくても、開いている間は使える */ } };
+  const lsDel = (k) => { try { localStorage.removeItem(k); } catch (e) { /* 同上 */ } };
+
   const hasGas = typeof google === 'object' && google && google.script && google.script.run;
-  const wantsDemo = window.TSUMIAGE_DEMO || /[?&]demo/.test(location.search);
   // GitHub Pages などに置いた画面から、Apps Script のウェブアプリへ直接送る場合の宛先
-  // （ファイルをダブルクリックして開いたときは、ブラウザ版として動かす）
   const apiUrl = String(window.TSUMIAGE_API_URL || '').trim();
-  const useHttp = !hasGas && !wantsDemo && !!apiUrl && /^https?:$/.test(location.protocol);
-  // 'gas' は「スプレッドシートに保存する版」のこと（送り方は hasGas か useHttp のどちらか）
-  const mode = hasGas || useHttp ? 'gas' : wantsDemo ? 'demo' : 'local';
+  const picked = pickStoreMode({
+    hasGas: !!hasGas,
+    wantsDemo: !!window.TSUMIAGE_DEMO || /[?&]demo/.test(location.search),
+    apiUrl,
+    protocol: location.protocol,
+    search: location.search,
+    token: lsGet(TOKEN_KEY),
+    storedViewKey: lsGet(VIEW_KEY),
+    allowFile: window.TSUMIAGE_TEST_ALLOW_FILE === true, // テストのときだけ使う
+  });
+  const { mode, useHttp, viewKey } = picked;
+  if (picked.rememberView) lsSet(VIEW_KEY, viewKey);
+  if (picked.forgetView) lsDel(VIEW_KEY);
+  const usesServer = mode === 'gas' || mode === 'view';
+  const cacheKey = mode === 'view' ? VIEW_CACHE_KEY : CACHE_KEY;
 
   let state = blankState();
   let outbox = []; // スプレッドシートにまだ送っていない変更
   let ready = false;
+  let fresh = false; // この画面を開いてから、1回でもサーバーから最新を受け取れたか
   let spreadsheetUrl = '';
-  let token = '';
-  try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { /* 読めない環境では、毎回入力する */ }
-  let status = { kind: mode === 'gas' ? 'syncing' : mode, lastSync: 0, message: '' };
+  let shareKey = ''; // 持ち主の画面で使う、見る用リンクの鍵
+  let token = lsGet(TOKEN_KEY);
+  let status = { kind: usesServer ? 'syncing' : mode, lastSync: 0, message: '' };
   const listeners = { data: new Set(), status: new Set() };
 
   function idleTimer(updatedAt = 0) {
@@ -126,12 +170,15 @@ const Store = (() => {
   /* ---------- この端末への保存 ---------- */
 
   function readCache() {
-    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); } catch (e) { return null; }
+    try { return JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e) { return null; }
   }
   function writeCache() {
     if (mode === 'demo') return;
     try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 1, state, outbox, lastSync: status.lastSync, spreadsheetUrl }));
+      const saved = mode === 'view'
+        ? { v: 1, state, lastSync: status.lastSync }
+        : { v: 1, state, outbox, lastSync: status.lastSync, spreadsheetUrl, shareKey };
+      localStorage.setItem(cacheKey, JSON.stringify(saved));
     } catch (e) {
       // 保存できない環境では、開いているあいだだけ動かす
     }
@@ -169,6 +216,8 @@ const Store = (() => {
   let batchDirty = false;
 
   function commit(op) {
+    // 見るだけの画面では、何も変えない（受付側でも断るが、画面側でも止めておく）
+    if (mode === 'view') return;
     applyOp(op);
     if (mode === 'gas') {
       outbox.push(op);
@@ -233,8 +282,8 @@ const Store = (() => {
   }
 
   function sync() {
-    if (mode !== 'gas') return;
-    if (useHttp && !token) {
+    if (!usesServer) return;
+    if (mode === 'gas' && useHttp && !token) {
       setStatus({ kind: 'error', message: '合言葉が入っていません', auth: true });
       return;
     }
@@ -244,7 +293,7 @@ const Store = (() => {
     }
     inFlight = true;
     clearTimeout(retryTimer);
-    const sent = outbox.slice();
+    const sent = mode === 'view' ? [] : outbox.slice();
     setStatus({ kind: 'syncing' });
 
     callSync(sent, (res) => {
@@ -254,8 +303,10 @@ const Store = (() => {
       state = normalize(res);
       outbox.forEach(applyOp); // 送っている間に増えた変更を上に重ねる
       if (res && res.spreadsheetUrl) spreadsheetUrl = res.spreadsheetUrl;
+      if (mode === 'gas' && res && res.viewKey) shareKey = String(res.viewKey);
       const wasReady = ready;
       ready = true;
+      fresh = true;
       retryDelay = 5000;
       status = { kind: 'synced', lastSync: Date.now(), message: '' };
       writeCache();
@@ -267,9 +318,19 @@ const Store = (() => {
       }
     }, (err) => {
       inFlight = false;
-      setStatus({ kind: 'error', message: (err && err.message) || String(err), auth: !!(err && err.auth) });
-      // 合言葉が違うときは、入れなおすまでくり返しても意味がない
-      if (err && err.auth) return;
+      const auth = !!(err && err.auth);
+      // 見る用の鍵が作り直されていたら、前に覚えた記録も見せない
+      if (mode === 'view' && auth) {
+        const wasReady = ready;
+        state = blankState();
+        ready = false;
+        fresh = false;
+        lsDel(VIEW_CACHE_KEY);
+        if (wasReady) emit('data');
+      }
+      setStatus({ kind: 'error', message: (err && err.message) || String(err), auth });
+      // 合言葉や鍵が違うときは、くり返しても意味がない
+      if (auth) return;
       retryTimer = setTimeout(sync, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 120000);
     });
@@ -282,11 +343,13 @@ const Store = (() => {
       return;
     }
     const fail = (message, auth = false) => onFail(Object.assign(new Error(message), { auth }));
+    // 見る人は鍵だけを送る（変更は送らない）
+    const payload = mode === 'view' ? { view: viewKey } : { token, ops };
     // text/plain にすると、事前の確認（プリフライト）が要らず、そのまま送れる
     fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token, ops }),
+      body: JSON.stringify(payload),
     })
       .then((r) => {
         if (!r.ok) throw new Error(`サーバーがエラーを返しました（${r.status}）`);
@@ -294,7 +357,7 @@ const Store = (() => {
       })
       .then((body) => {
         if (body && body.ok) onOk(body.data);
-        else if (body && body.error === 'auth') fail('合言葉が違います', true);
+        else if (body && body.error === 'auth') fail(mode === 'view' ? 'この見る用リンクは使えなくなっています' : '合言葉が違います', true);
         else fail((body && body.message) || 'サーバー側でエラーが起きました');
       })
       .catch((e) => fail(e instanceof TypeError ? 'つながりませんでした（電波かURLを確かめてください）' : e.message));
@@ -320,9 +383,10 @@ const Store = (() => {
     const cache = readCache();
     if (cache && cache.state) {
       state = normalize(cache.state);
-      outbox = Array.isArray(cache.outbox) ? cache.outbox : [];
+      outbox = mode !== 'view' && Array.isArray(cache.outbox) ? cache.outbox : [];
       status.lastSync = cache.lastSync || 0;
       spreadsheetUrl = cache.spreadsheetUrl || '';
+      shareKey = cache.shareKey || '';
       ready = true;
     }
 
@@ -346,7 +410,7 @@ const Store = (() => {
     }
 
     // 合言葉をまだ入れていない端末では、入れてもらうまで待つ
-    if (useHttp && !token) {
+    if (mode === 'gas' && useHttp && !token) {
       status = { kind: 'error', lastSync: status.lastSync, message: '合言葉が入っていません', auth: true };
       return;
     }
@@ -396,10 +460,14 @@ const Store = (() => {
     get status() { return status; },
     get pending() { return outbox.length; },
     get spreadsheetUrl() { return spreadsheetUrl; },
-    /** 合言葉が必要な送り方か（GitHub Pages などに置いたとき） */
-    get usesToken() { return useHttp; },
+    /** 合言葉が必要な送り方か（GitHub Pages などに置いた、持ち主の画面） */
+    get usesToken() { return mode === 'gas' && useHttp; },
     get hasToken() { return !!token; },
     setToken,
+    /** 見る用リンクの鍵（持ち主の画面で、同期のあとに入る） */
+    get shareKey() { return shareKey; },
+    /** この画面を開いてから、サーバーの最新を受け取れたか（見るだけの画面で、古い「勉強中」を出さないため） */
+    get fresh() { return fresh; },
     /** 並び順どおりの科目（all = true で非表示の科目も含める） */
     subjects(all = false) {
       return state.subjects

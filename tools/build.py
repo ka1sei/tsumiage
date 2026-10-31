@@ -17,7 +17,8 @@ def main() -> None:
     wrapped = (
         "/* tools/build.py が作るテスト用の複製。直接編集しない */\n"
         "const GAS = (function () {\n" + code +
-        "\nreturn { sync: sync, setup: setup, doPost: doPost, doGet: doGet, DEFAULT_SUBJECTS: DEFAULT_SUBJECTS, TABLES: TABLES };\n})();\n"
+        "\nreturn { sync: sync, setup: setup, resetViewKey: resetViewKey, doPost: doPost, doGet: doGet,"
+        " DEFAULT_SUBJECTS: DEFAULT_SUBJECTS, TABLES: TABLES };\n})();\n"
     )
     out = ROOT / "tests" / "_code_gs.js"
     out.write_text(wrapped, encoding="utf-8", newline="\n")

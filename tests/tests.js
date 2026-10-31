@@ -400,3 +400,106 @@ test('GAS：ブラウザで開いても、データは見えない', () => {
   GAS.setup();
   ok(!/sub_html|ses_/.test(GAS.doGet().getContent()));
 });
+
+/* ---------- 見る用リンク ---------- */
+
+test('どの版として動くか（見る用リンク・持ち主・ブラウザ版・デモ）', () => {
+  const base = { hasGas: false, wantsDemo: false, apiUrl: 'https://example.com/exec', protocol: 'https:', search: '', token: '', storedViewKey: '' };
+  eq(pickStoreMode({ ...base, apiUrl: '' }).mode, 'local', 'URLが書いていない');
+  eq(pickStoreMode({ ...base, protocol: 'file:' }).mode, 'local', 'ファイルを開いたとき');
+  eq(pickStoreMode({ ...base, protocol: 'file:', search: '?view=abc' }).mode, 'local', 'ファイルなら、見る用リンクでもブラウザ版');
+  eq(pickStoreMode({ ...base, wantsDemo: true, search: '?view=abc' }).mode, 'demo');
+  eq(pickStoreMode(base).mode, 'gas', '持ち主（合言葉はこれから入れる）');
+  eq(pickStoreMode({ ...base, token: 't' }).mode, 'gas');
+  const v = pickStoreMode({ ...base, search: '?view=abc', token: 't' });
+  eq([v.mode, v.viewKey, v.rememberView], ['view', 'abc', true], '合言葉がある端末でも、見る用リンクなら見るだけ');
+  const home = pickStoreMode({ ...base, storedViewKey: 'abc' });
+  eq([home.mode, home.viewKey], ['view', 'abc'], 'ホーム画面から開いたとき（鍵を覚えている）');
+  eq(pickStoreMode({ ...base, storedViewKey: 'abc', token: 't' }).mode, 'gas', '合言葉がある端末は、ふつうに開けば持ち主');
+  const owner = pickStoreMode({ ...base, storedViewKey: 'abc', search: '?owner' });
+  eq([owner.mode, owner.forgetView], ['gas', true], '?owner で持ち主に戻れる');
+  eq(pickStoreMode({ ...base, search: '?view=' }).mode, 'gas', '鍵が空なら、見るだけにしない');
+});
+
+test('GAS：setup で見る用の鍵もできて、合言葉とは別のもの', () => {
+  GasMock.reset();
+  GAS.setup();
+  const { apiToken, viewKey } = GasMock.props;
+  ok(/^[0-9a-f]{20}$/.test(viewKey), `20文字の英数字 ${viewKey}`);
+  ok(viewKey !== apiToken, '合言葉と同じになっている');
+  GAS.setup();
+  eq(GasMock.props.viewKey, viewKey, '何度実行しても変わらない');
+});
+
+test('GAS：見る用の鍵で、記録（メモも）・ごほうび・タイマーが読める。スプレッドシートのURLは出さない', () => {
+  GasMock.reset();
+  GAS.setup();
+  post({ token: GasMock.props.apiToken, ops: [
+    { type: 'put', table: 'sessions', record: { id: 'ses_v', subjectId: 'sub_html', start: 1, end: 2, seconds: 60, memo: 'メモです', updatedAt: 5 } },
+    { type: 'put', table: 'rewards', record: { id: 'rew_v', title: 'ランチ', hours: 10, updatedAt: 5 } },
+    { type: 'timer', value: { state: 'running', subjectIds: ['sub_html'], startedAt: 10, runningSince: 10, elapsedMs: 0, updatedAt: 6 } },
+  ] });
+  const res = post({ view: GasMock.props.viewKey });
+  eq(res.ok, true);
+  eq(res.data.sessions.map((s) => [s.id, s.memo]), [['ses_v', 'メモです']]);
+  eq(res.data.rewards.map((r) => r.title), ['ランチ']);
+  eq(res.data.subjects.length, 6);
+  eq([res.data.timer.state, res.data.timer.subjectIds], ['running', ['sub_html']]);
+  ok(!('spreadsheetUrl' in res.data), 'スプレッドシートのURLが入っている');
+  ok(!('viewKey' in res.data), '鍵が入っている');
+});
+
+test('GAS：見る用の鍵では、何も保存できない（合言葉をいっしょに送っても）', () => {
+  GasMock.reset();
+  GAS.setup();
+  const ops = [
+    { type: 'put', table: 'sessions', record: { id: 'ses_x', subjectId: 'sub_html', start: 1, end: 2, seconds: 60, updatedAt: 5 } },
+    { type: 'timer', value: { state: 'running', subjectIds: ['sub_html'], startedAt: 1, runningSince: 1, elapsedMs: 0, updatedAt: 9 } },
+  ];
+  eq(post({ view: GasMock.props.viewKey, ops }).ok, true, '読むことはできる');
+  eq(post({ view: GasMock.props.viewKey, token: GasMock.props.apiToken, ops }).ok, true);
+  const now = GAS.sync([]);
+  eq(now.sessions.length, 0, '記録が増えた');
+  eq(now.timer, null, 'タイマーが変わった');
+});
+
+test('GAS：違う鍵・合言葉・空の鍵では読めない。setup 前は断る', () => {
+  GasMock.reset();
+  eq(post({ view: 'なんでも' }).error, 'setup');
+  GAS.setup();
+  eq(post({ view: 'ちがう' }), { ok: false, error: 'auth' });
+  eq(post({ view: GasMock.props.apiToken }), { ok: false, error: 'auth' }, '合言葉は、見る用の鍵としては使えない');
+  eq(post({ view: '' }), { ok: false, error: 'auth' });
+  eq(post({ view: null }), { ok: false, error: 'auth' });
+});
+
+test('GAS：見る用の鍵を作り直すと、前の鍵は使えず、持ち主には新しい鍵が届く', () => {
+  GasMock.reset();
+  GAS.setup();
+  const old = GasMock.props.viewKey;
+  GAS.resetViewKey();
+  const fresh = GasMock.props.viewKey;
+  ok(fresh && fresh !== old, '鍵が変わっていない');
+  eq(post({ view: old }), { ok: false, error: 'auth' });
+  eq(post({ view: fresh }).ok, true);
+  eq(post({ token: GasMock.props.apiToken, ops: [] }).data.viewKey, fresh);
+});
+
+test('GAS：前の版で setup した人にも、持ち主の同期で見る用の鍵ができる', () => {
+  GasMock.reset();
+  GAS.setup();
+  delete GasMock.props.viewKey;
+  const res = post({ token: GasMock.props.apiToken, ops: [] });
+  ok(/^[0-9a-f]{20}$/.test(res.data.viewKey), `鍵 ${res.data.viewKey}`);
+  eq(GasMock.props.viewKey, res.data.viewKey, '保存されている');
+  eq(post({ token: GasMock.props.apiToken, ops: [] }).data.viewKey, res.data.viewKey, '2回目も同じ鍵');
+});
+
+test('GAS：見る用の読み込みでは、シートを作ったり書きかえたりしない', () => {
+  GasMock.reset();
+  GasMock.props.apiToken = 'tok';
+  GasMock.props.viewKey = 'key';
+  const res = post({ view: 'key' });
+  eq([res.ok, res.data.subjects.length, res.data.sessions.length], [true, 0, 0]);
+  eq(GasMock.spreadsheet.getSheets().map((s) => s.getName()), ['シート1'], 'シートが増えた');
+});

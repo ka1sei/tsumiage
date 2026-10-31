@@ -6,11 +6,16 @@
  * 画面は GitHub Pages に置いてあり、ここは「保存の受付」だけをします（doPost）。
  * 手順は「セットアップ手順.md」を見てください。
  *
+ * 受け付けるのは2種類です。
+ * - 合言葉つき：持ち主の画面から。変更を保存して、最新のデータを返す
+ * - 見る用の鍵つき：見る用リンクを開いた人の画面から。読むだけで、何も保存しない
+ *
  * @OnlyCurrentDoc
  */
 
-/** 合言葉を入れておく場所の名前（スクリプトのプロパティ） */
+/** 合言葉と見る用の鍵を入れておく場所の名前（スクリプトのプロパティ） */
 var TOKEN_PROP = 'apiToken';
+var VIEW_PROP = 'viewKey';
 
 /** 最初に入れておく科目（画面側 store.js の DEFAULT_SUBJECTS と同じ） */
 var DEFAULT_SUBJECTS = [
@@ -71,19 +76,77 @@ function doGet() {
 }
 
 /**
- * 画面（GitHub Pages）から、変更を受け取る。
- * 送られてくるのは { token: 合言葉, ops: 変更のリスト }。
- * 合言葉が合わなければ、何も保存せずに断る。
+ * 画面（GitHub Pages）から、送信を受け取る。
+ * - 持ち主：{ token: 合言葉, ops: 変更のリスト } → 保存して、最新のデータと見る用の鍵を返す
+ * - 見る人：{ view: 見る用の鍵 } → 読むだけ。ops がついていても、何も保存しない
+ * 合言葉や鍵が合わなければ、何もせずに断る。
  */
 function doPost(e) {
   try {
     var body = parseJson_(e && e.postData && e.postData.contents) || {};
-    var expected = PropertiesService.getScriptProperties().getProperty(TOKEN_PROP);
+    var props = PropertiesService.getScriptProperties();
+    var expected = props.getProperty(TOKEN_PROP);
     if (!expected) return json_({ ok: false, error: 'setup', message: 'Apps Script で「setup」をまだ実行していません' });
+
+    // 見る用の鍵がついていたら、合言葉がついていても「見るだけ」として扱う
+    if (body.view !== undefined) {
+      var viewKey = props.getProperty(VIEW_PROP);
+      if (!viewKey || !safeEqual_(String(body.view || ''), viewKey)) return json_({ ok: false, error: 'auth' });
+      return json_({ ok: true, data: viewData_() });
+    }
+
     if (!safeEqual_(String(body.token || ''), expected)) return json_({ ok: false, error: 'auth' });
-    return json_({ ok: true, data: sync(Array.isArray(body.ops) ? body.ops : []) });
+    var data = sync(Array.isArray(body.ops) ? body.ops : []);
+    data.viewKey = ensureViewKey_();
+    return json_({ ok: true, data: data });
   } catch (err) {
     return json_({ ok: false, error: 'server', message: String(err && err.message || err) });
+  }
+}
+
+/**
+ * 見る人に返すデータ。シートを読むだけで、書きこまない。
+ * 持ち主の保存を待たせないよう、ロックは使わない（読み途中に保存が重なっても、次の読み込みでそろう）。
+ * スプレッドシートのURLは返さない。
+ */
+function viewData_() {
+  return {
+    subjects: readTable_('subjects'),
+    sessions: readTable_('sessions'),
+    rewards: readTable_('rewards'),
+    timer: parseJson_(PropertiesService.getScriptProperties().getProperty('timer')),
+    serverTime: Date.now()
+  };
+}
+
+/** シートを読むだけ（シートがなければ空。見出しの書き足しもしない） */
+function readTable_(name) {
+  var def = TABLES[name];
+  var sheet = SpreadsheetApp.getActive().getSheetByName(def.sheet);
+  if (!sheet) return [];
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  return sheet.getRange(2, 1, last - 1, def.cols.length).getValues()
+    .map(function (row) { return fromRow_(def, row); })
+    .filter(function (r) { return r.id && !r.deleted; });
+}
+
+/** 見る用の鍵を返す。まだなければ作る（前の版で setup した人も、そのまま使えるように） */
+function ensureViewKey_() {
+  var props = PropertiesService.getScriptProperties();
+  var key = props.getProperty(VIEW_PROP);
+  if (key) return key;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    key = props.getProperty(VIEW_PROP);
+    if (!key) {
+      key = makeToken_();
+      props.setProperty(VIEW_PROP, key);
+    }
+    return key;
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -106,7 +169,8 @@ function makeToken_() {
 
 /**
  * 最初に1回だけ、エディタから実行する関数。
- * 権限を許可して、シートを作り、合言葉を作ります（何度実行しても大丈夫。合言葉は変わりません）。
+ * 権限を許可して、シートを作り、合言葉と見る用の鍵を作ります。
+ * 何度実行しても大丈夫です（合言葉も鍵も変わりません）。
  * 合言葉は、下の「実行ログ」に出ます。
  */
 function setup() {
@@ -117,8 +181,27 @@ function setup() {
     token = makeToken_();
     props.setProperty(TOKEN_PROP, token);
   }
+  ensureViewKey_();
   Logger.log('準備できました。科目 %s件、記録 %s件、ごほうび %s件', res.subjects.length, res.sessions.length, res.rewards.length);
   Logger.log('合言葉：%s', token);
+  Logger.log('見る用リンクは、アプリの「設定」に出ます。');
+}
+
+/**
+ * 見る用の鍵を作り直す関数。エディタから実行します。
+ * 前の見る用リンクは、使えなくなります（見ていた人の画面からも、記録が消えます）。
+ * 新しいリンクは、アプリの「設定」に出ます。
+ */
+function resetViewKey() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    PropertiesService.getScriptProperties().setProperty(VIEW_PROP, makeToken_());
+  } finally {
+    lock.releaseLock();
+  }
+  Logger.log('見る用の鍵を作り直しました。前のリンクは使えません。');
+  Logger.log('新しいリンクは、アプリの「設定」→「見る用リンク」に出ます（一度同期すると出ます）。');
 }
 
 /**

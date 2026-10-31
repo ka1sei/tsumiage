@@ -1862,6 +1862,212 @@ button {
   animation: breathe 1.6s ease-in-out infinite;
 }
 
+/* ---------- 合言葉の入力（持ち主の画面） ---------- */
+
+.token-form {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 420px);
+  text-align: left;
+}
+
+.token-form > p:first-child {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.token-form .btn {
+  justify-self: start;
+}
+
+.panel .token-form {
+  margin: 16px 0 4px;
+}
+
+/* ---------- 見る用リンク（持ち主の設定画面） ---------- */
+
+/* 文字は16pxのまま（16pxより小さいと、iPhoneで触ったときに画面が拡大される）。英数字は数字用の書体で読みやすく */
+.share-url {
+  margin: 12px 0 0;
+  color: var(--ink-2);
+  font-family: var(--font-num);
+}
+
+.share-url + .btn-row {
+  margin-top: 12px;
+}
+
+/* ---------- 見るだけの画面 ---------- */
+
+/* メニューは「記録」「ごほうび」の2つ */
+.is-view .nav {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+/* 名前が長くなるので、少し小さくして1行におさめる */
+.is-view .brand {
+  min-width: 0;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+
+.is-view .brand__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 359px) {
+  .is-view .brand {
+    gap: 6px;
+    font-size: 15px;
+    letter-spacing: 0;
+  }
+}
+
+.sync.is-view {
+  border-color: var(--wash);
+  background: var(--wash-soft);
+  color: var(--blue-deep);
+}
+
+/* 記録は押しても何も起きないので、押せる見た目にしない。メモは全部出す */
+.rec--static {
+  cursor: default;
+}
+
+.rec--static:hover {
+  background: none;
+}
+
+.rec--static .rec__memo {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+
+/* いまの様子：勉強中は青→水色（タイマーの計測中と同じ）、一時停止中はグレー、勉強していないときは白 */
+.now {
+  position: relative;
+  z-index: 0;
+  margin: 0 0 20px;
+  padding: 16px 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+@media (min-width: 600px) {
+  .now {
+    padding: 18px 24px;
+  }
+}
+
+.now__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.now__line {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.now__state + .now__line {
+  margin-top: 8px;
+}
+
+.now__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin: 10px 0 0;
+}
+
+.now__subject {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.now__clock {
+  font-family: var(--font-num);
+  font-size: clamp(30px, 9vw, 40px);
+  font-stretch: 110%;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+/* 数字の幅をそろえて、1秒ごとに横ゆれしないようにする（タイマーと同じ） */
+.now__clock .d {
+  display: inline-block;
+  width: 0.62em;
+  text-align: center;
+}
+
+.now__clock .c {
+  position: relative;
+  top: -0.06em;
+  display: inline-block;
+  width: 0.3em;
+  text-align: center;
+  opacity: 0.55;
+}
+
+.now--idle .now__state {
+  color: var(--ink-2);
+}
+
+.now--running {
+  border-color: transparent;
+  background: var(--grad);
+  color: #fff;
+}
+
+.now--running .now__subject .dot {
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.now__pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.now--paused {
+  border-color: transparent;
+  background: #eceff2;
+  color: var(--ink-2);
+}
+
+.now--paused .now__state .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.now--paused .now__clock {
+  color: var(--ink-2);
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
 /* ---------- ダイアログ ---------- */
 
 dialog {

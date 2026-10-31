@@ -1,6 +1,7 @@
 /* ==========================================================================
    つみあげ — 画面
    タイマー／記録／ごほうび／設定 の4画面と、入力用のダイアログ
+   見る用リンクで開いたときは、記録とごほうびの2画面だけを、見るだけで出す
    ========================================================================== */
 'use strict';
 
@@ -8,7 +9,11 @@
   const { esc, durText, durHTML } = U;
   const { colorVar } = Charts;
   const $ = (sel, root = document) => root.querySelector(sel);
-  const BASE_TITLE = 'つみあげ｜勉強時間の記録';
+  // 見る用リンクを開いた人の画面か
+  const VIEW = Store.mode === 'view';
+  const OWNER_NAME = String(window.TSUMIAGE_OWNER_NAME || '').trim();
+  const VIEW_TITLE = OWNER_NAME ? `${OWNER_NAME}の勉強記録` : '勉強の記録';
+  const BASE_TITLE = VIEW ? `${VIEW_TITLE}｜つみあげ` : 'つみあげ｜勉強時間の記録';
 
   /* ---------- アイコン（24×24、線で描く） ---------- */
   const svg = (body, fill = false) => `<svg class="icon${fill ? ' icon--fill' : ''}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${body}</svg>`;
@@ -33,6 +38,8 @@
     external: svg('<path d="M14 4.5h5.5V10M19.5 4.5 11 13M17.5 14v4.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1H10"/>'),
     download: svg('<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>'),
     upload: svg('<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 19.5h14"/>'),
+    eye: svg('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
+    copy: svg('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>'),
   };
   const MARK = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
     <rect x="4" y="21" width="23" height="6.5" rx="2" fill="#004fc8"/>
@@ -40,7 +47,8 @@
     <rect x="4" y="5" width="16" height="6.5" rx="2" fill="#00a3ec"/></svg>`;
 
   /* ---------- 画面の状態（この端末だけで覚えておくもの） ---------- */
-  const UI_KEY = 'tsumiage:ui:v1';
+  // 見るだけの画面の表示の好みは、持ち主の画面とは別に覚える
+  const UI_KEY = VIEW ? 'tsumiage:ui-view:v1' : 'tsumiage:ui:v1';
   function loadUi() {
     try { return JSON.parse(localStorage.getItem(UI_KEY) || '{}'); } catch (e) { return {}; }
   }
@@ -66,15 +74,17 @@
     } catch (e) { /* 保存できなくても動く */ }
   }
 
-  const ROUTES = [
+  const ALL_ROUTES = [
     { id: 'timer', label: 'タイマー', icon: ICON.timer },
     { id: 'stats', label: '記録', icon: ICON.chart },
     { id: 'rewards', label: 'ごほうび', icon: ICON.gift },
     { id: 'settings', label: '設定', icon: ICON.sliders },
   ];
+  // 見るだけの画面は、記録とごほうびだけ
+  const ROUTES = VIEW ? ALL_ROUTES.filter((r) => r.id === 'stats' || r.id === 'rewards') : ALL_ROUTES;
   function routeFromHash() {
     const id = (location.hash || '').replace(/^#\/?/, '');
-    return ROUTES.some((r) => r.id === id) ? id : 'timer';
+    return ROUTES.some((r) => r.id === id) ? id : ROUTES[0].id;
   }
   let route = routeFromHash();
 
@@ -292,16 +302,19 @@
     const split = e.items.length > 1
       ? `<span class="rec__split">${e.items.map((s, i) => `<span>${esc(subs[i].name)} ${esc(durText(s.seconds))}</span>`).join('')}</span>`
       : '';
+    // 見るだけの画面では、押しても何も起きない形にする（編集画面を開かない）
+    const open = VIEW ? '<div class="rec rec--static">'
+      : `<button type="button" class="rec" data-action="edit-session" data-id="${esc(e.key)}">`;
     return `
       <li>
-        <button type="button" class="rec" data-action="edit-session" data-id="${esc(e.key)}">
+        ${open}
           ${dotHTML(subs)}
           <span class="rec__subject">${esc(namesText(subs))}</span>
           <span class="rec__dur">${durHTML(e.seconds)}</span>
           <span class="rec__time">${U.timeLabel(e.start)}〜${U.timeLabel(e.end)}</span>
           ${split}
           ${e.memo ? `<span class="rec__memo">${esc(e.memo)}</span>` : ''}
-        </button>
+        ${VIEW ? '</div>' : '</button>'}
       </li>`;
   }
 
@@ -444,7 +457,7 @@
       <section class="panel" aria-labelledby="list-h">
         <div class="sec-head">
           <h2 class="sec-title" id="list-h">記録</h2>
-          <button type="button" class="btn btn--text" data-action="add-session">${ICON.plus}手で追加</button>
+          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-session">${ICON.plus}手で追加</button>`}
         </div>
         ${list.length ? recordList(shown, { group: p !== 'day', dayTotals }) : '<p class="empty">この期間の記録はありません。</p>'}
         ${rest > 0 ? `<button type="button" class="btn btn--quiet btn--block" data-action="more">さらに表示（残り${rest}件）</button>` : ''}
@@ -463,7 +476,7 @@
       body = r.claimedAt
         ? `<p class="road__state">${at ? `${U.fullDate(at)}に達成。` : ''}受け取りました。</p>`
         : `<p class="road__state">${at ? `${U.fullDate(at)}に` : ''}達成しました。</p>
-           <button type="button" class="btn btn--primary btn--sm" data-action="claim" data-id="${esc(r.id)}">${ICON.check}受け取った</button>`;
+           ${VIEW ? '' : `<button type="button" class="btn btn--primary btn--sm" data-action="claim" data-id="${esc(r.id)}">${ICON.check}受け取った</button>`}`;
     } else {
       body = `${Charts.meter(info.ratio, `${r.title}までの進み具合`)}
         <p class="road__rest"><span>あと ${durHTML(info.remain)}</span><span class="road__pct">${Math.floor(info.ratio * 100)}%</span></p>`;
@@ -477,7 +490,7 @@
           <p class="road__title">${esc(r.title)}</p>
           ${body}
         </div>
-        <button type="button" class="icon-btn icon-btn--quiet" data-action="edit-reward" data-id="${esc(r.id)}" aria-label="「${esc(r.title)}」を編集">${ICON.edit}</button>
+        ${VIEW ? '' : `<button type="button" class="icon-btn icon-btn--quiet" data-action="edit-reward" data-id="${esc(r.id)}" aria-label="「${esc(r.title)}」を編集">${ICON.edit}</button>`}
       </li>`;
   }
 
@@ -494,7 +507,8 @@
       <section class="rw-hero" aria-labelledby="rw-total-h">
         <h2 class="label" id="rw-total-h">これまでの勉強時間</h2>
         <p class="hero-num hero-num--xl">${durHTML(total)}</p>
-        ${first ? `<p class="meta">${U.fullDate(first)}から記録しています。</p>` : '<p class="meta">記録をつけると、ここに合計が出ます。</p>'}
+        ${first ? `<p class="meta">${U.fullDate(first)}から記録しています。</p>`
+          : `<p class="meta">${VIEW ? 'まだ記録がありません。' : '記録をつけると、ここに合計が出ます。'}</p>`}
         ${subjectsWithTime.length ? `
         <ul class="rw-subjects" aria-label="科目ごとの合計">${subjectsWithTime.sort((a, b) => b.seconds - a.seconds).map((s) => `
           <li><span class="dot" style="--c:${colorVar(s.color)}"></span><span class="rw-subjects__name">${esc(s.name)}</span><span class="rw-subjects__val">${esc(durText(s.seconds))}</span></li>`).join('')}
@@ -504,10 +518,11 @@
       <section class="panel road" aria-labelledby="road-h">
         <div class="sec-head">
           <h2 class="sec-title" id="road-h">ごほうび</h2>
-          <button type="button" class="btn btn--text" data-action="add-reward">${ICON.plus}追加</button>
+          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-reward">${ICON.plus}追加</button>`}
         </div>
         ${infos.length
           ? `<ol class="road__list">${infos.map((i) => roadItem(i, next && i.r.id === next.r.id)).join('')}</ol>`
+          : VIEW ? '<p class="empty">まだごほうびは決まっていません。</p>'
           : `<div class="empty empty--action">
               <p>まだごほうびがありません。</p>
               <p>「合計100時間で、ちょっといいランチ」のように、時間と内容を決めておけます。</p>
@@ -517,8 +532,61 @@
     </div>`;
   }
 
+  /* ---------- いまの様子（見るだけの画面の一番上に出す） ---------- */
+
+  /** 例：今日 14:30 / 昨日 21:10 / 10月28日 21:10（今年でなければ年もつける） */
+  function whenLabel(t, now = Date.now()) {
+    const day = U.startOfDay(t);
+    const today = U.startOfDay(now);
+    const time = U.timeLabel(t);
+    if (day === today) return `今日 ${time}`;
+    if (day === U.startOfDay(today - 1)) return `昨日 ${time}`;
+    const d = new Date(t);
+    const y = d.getFullYear() === new Date(now).getFullYear() ? '' : `${d.getFullYear()}年`;
+    return `${y}${d.getMonth() + 1}月${d.getDate()}日 ${time}`;
+  }
+
+  /** 「いまの様子」の欄が、どの状態か（書き直しが要るかの判断にも使う） */
+  function nowState() {
+    if (!Store.fresh) return Store.status.kind === 'error' ? 'unknown' : 'checking';
+    return Store.state.timer.state; // running / paused / idle
+  }
+
+  function nowHTML() {
+    const t = Store.state.timer;
+    const st = nowState();
+    if (st === 'checking' || st === 'unknown') {
+      return `
+      <section class="now now--idle" aria-label="いまの様子">
+        <p class="now__state">${st === 'checking' ? 'いまの様子を確かめています…' : 'いまの様子を読み込めませんでした。'}</p>
+      </section>`;
+    }
+    if (st === 'idle') {
+      const { sessions } = Store.state;
+      const now = Date.now();
+      const today = U.sumSec(U.inRange(sessions, U.periodRange('day', now)));
+      const last = sessions.length ? Math.max(...sessions.map((s) => s.end || s.start)) : 0;
+      return `
+      <section class="now now--idle" aria-label="いまの様子">
+        <p class="now__state">いまは勉強していません</p>
+        ${last ? `<p class="now__line">最後の記録：${esc(whenLabel(last, now))}</p>` : ''}
+        <p class="now__line">${today ? `今日の合計：${esc(durText(today))}` : '今日はまだ勉強していません'}</p>
+      </section>`;
+    }
+    const subs = timerSubjectIds(t).map(subjectOf);
+    const running = st === 'running';
+    return `
+    <section class="now now--${st}" aria-label="いまの様子">
+      <p class="now__state">${running ? '<span class="now__pulse" aria-hidden="true"></span>いま勉強中' : `${ICON.pause}一時停止中`}</p>
+      <p class="now__main">
+        <span class="now__subject">${dotHTML(subs)}<span>${esc(namesText(subs))}</span></span>
+        <span class="now__clock" role="timer" data-now-clock>${clockHTML(elapsedMs(t))}</span>
+      </p>
+    </section>`;
+  }
+
   /* ---------- 合言葉（GitHub Pages などに置いたとき、端末ごとに1回入れる） ---------- */
-  function tokenFormHTML(lead) {
+  function tokenFormHTML(lead, note = '') {
     return `
       <div class="token-form">
         ${lead ? `<p>${lead}</p>` : ''}
@@ -526,7 +594,31 @@
         <input type="text" id="token-input" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="Apps Script で作った合言葉">
         <button type="button" class="btn btn--primary" data-action="save-token">保存してつなぐ</button>
         <p class="help">この端末に覚えておくので、入れるのは1回だけです。<br>合言葉は、Apps Script の「setup」を実行したときのログに出ます。</p>
+        ${note ? `<p class="help">${note}</p>` : ''}
       </div>`;
+  }
+
+  /* ---------- 見る用リンク（持ち主の設定画面に出す） ---------- */
+  function shareUrl(key) {
+    return new URL(`./?view=${encodeURIComponent(key)}`, location.href).href;
+  }
+
+  function shareHTML() {
+    if (!Store.usesToken) return '';
+    const url = Store.shareKey ? shareUrl(Store.shareKey) : '';
+    return `
+      <section class="panel" aria-labelledby="share-h">
+        <div class="sec-head"><h2 class="sec-title" id="share-h">見る用リンク</h2></div>
+        <p class="help">このリンクを開いた人は、記録とごほうびを見られます。<br>いま勉強中かどうかと、メモも見えます。<br>編集はできません。</p>
+        ${url ? `
+        <input type="text" class="share-url" id="share-url" value="${esc(url)}" readonly aria-label="見る用リンク">
+        <div class="btn-row">
+          <button type="button" class="btn btn--primary" data-action="copy-share">${ICON.copy}リンクをコピー</button>
+          <a class="btn btn--outline" href="${esc(url)}" target="_blank" rel="noopener">${ICON.external}開いてみる</a>
+        </div>
+        <p class="help">リンクを見られたくない人に知られたときは、Apps Script で「resetViewKey」を実行すると、作り直せます。<br>前のリンクは使えなくなります。</p>`
+        : '<p class="help">同期が終わると、ここにリンクが出ます。</p>'}
+      </section>`;
   }
 
   /* ---------- 設定 ---------- */
@@ -595,6 +687,8 @@
         </div>
       </section>
 
+      ${shareHTML()}
+
       <section class="panel" aria-labelledby="rule-h">
         <div class="sec-head"><h2 class="sec-title" id="rule-h">集計のルール</h2></div>
         <ul class="rules">
@@ -608,11 +702,25 @@
 
   function loadingHTML() {
     const failed = Store.status.kind === 'error';
+    if (VIEW) {
+      return `
+      <div class="loading" role="status">
+        ${MARK}
+        ${failed && Store.status.auth
+          ? '<p>この見る用リンクは、使えなくなっています。</p><p class="help">新しいリンクをもらってください。</p>'
+          : failed
+          ? `<p>記録を読み込めませんでした。</p><p class="help">${esc(Store.status.message)}</p>
+             <button type="button" class="btn btn--primary" data-action="sync-now">${ICON.sync}もう一度読み込む</button>`
+          : `<p>${esc(VIEW_TITLE)}を読み込んでいます。</p>`}
+      </div>`;
+    }
     return `
     <div class="loading" role="status">
       ${MARK}
       ${failed && Store.status.auth
-        ? tokenFormHTML(Store.hasToken ? '合言葉が違うようです。入れなおしてください。' : 'はじめに、合言葉を入れてください。')
+        ? (Store.hasToken
+          ? tokenFormHTML('合言葉が違うようです。入れなおしてください。')
+          : tokenFormHTML('このページの持ち主の方は、合言葉を入れてください。', '見る用のリンクをもらった方は、そのリンクから開いてください。'))
         : failed
         ? `<p>スプレッドシートから読み込めませんでした。</p><p class="help">${esc(Store.status.message)}</p>
            <button type="button" class="btn btn--primary" data-action="sync-now">${ICON.sync}もう一度読み込む</button>`
@@ -640,10 +748,21 @@
     let icon = ICON.device;
     let text = 'このブラウザに保存';
     let cls = '';
+    if (VIEW) {
+      // 見るだけの画面：ふだんは「見るだけ」。1分ごとの読み込みでは、表示を変えない（ちらつかせない）
+      if (s.kind === 'error') { icon = ICON.alert; text = s.auth ? 'リンクが使えません' : 'つながりません'; cls = ' is-error'; }
+      else if (!Store.fresh) { icon = ICON.sync; text = '読み込み中'; cls = ' is-syncing'; }
+      else { icon = ICON.eye; text = '見るだけ'; cls = ' is-view'; }
+      el.className = `sync${cls}`;
+      el.innerHTML = `${icon}<span>${text}</span>`;
+      el.title = s.lastSync ? `見るだけのページです。最後に読み込んだ時刻：${U.timeLabel(s.lastSync)}（押すと最新にします）` : '見るだけのページです（押すと最新にします）';
+      return;
+    }
     if (Store.mode === 'demo') {
       text = 'デモ表示（保存しません）';
     } else if (Store.mode === 'gas') {
       if (s.kind === 'syncing') { icon = ICON.sync; text = '同期中'; cls = ' is-syncing'; }
+      else if (s.kind === 'error' && s.auth) { icon = ICON.alert; text = Store.hasToken ? '合言葉が違います' : '合言葉が必要です'; cls = ' is-error'; }
       else if (s.kind === 'error') { icon = ICON.alert; text = Store.pending ? `未同期 ${Store.pending}件` : '同期できません'; cls = ' is-error'; }
       else { icon = ICON.check; text = '同期済み'; }
     }
@@ -654,6 +773,15 @@
       : 'データの保存先を見る';
   }
 
+  /** 見るだけの画面のタブの名前（勉強中は時間も出す） */
+  function viewTitle() {
+    const t = Store.state.timer;
+    const st = nowState();
+    if (st === 'running') return `勉強中 ${U.clockParts(elapsedMs(t)).join(':')}｜${VIEW_TITLE}`;
+    if (st === 'paused') return `一時停止中｜${VIEW_TITLE}`;
+    return BASE_TITLE;
+  }
+
   /** 書き直しの前後で、フォーカスしていたボタンを戻す */
   function focusKey(el) {
     if (!el || !view.contains(el) || !el.dataset || !el.dataset.action) return '';
@@ -661,6 +789,7 @@
   }
 
   let renderedDay = 0;
+  let shownNow = ''; // 見るだけの画面で、いま出している「いまの様子」の状態
 
   function render() {
     const key = focusKey(document.activeElement);
@@ -670,10 +799,17 @@
     renderSync();
     if (!Store.ready) {
       view.innerHTML = loadingHTML();
+      shownNow = '';
       return;
     }
-    view.innerHTML = VIEWS[route]();
-    if (Store.state.timer.state === 'idle') document.title = BASE_TITLE;
+    if (VIEW) {
+      shownNow = nowState();
+      view.innerHTML = nowHTML() + VIEWS[route]();
+      document.title = viewTitle();
+    } else {
+      view.innerHTML = VIEWS[route]();
+      if (Store.state.timer.state === 'idle') document.title = BASE_TITLE;
+    }
     if (key) {
       const el = [...view.querySelectorAll('[data-action]')].find((x) => focusKey(x) === key);
       if (el) el.focus({ preventScroll: true });
@@ -690,6 +826,14 @@
     const sec = Math.floor(ms / 1000);
     if (sec === lastSecond) return;
     lastSecond = sec;
+    if (VIEW) {
+      // 見るだけの画面：「いまの様子」の時間を、この端末の中で1秒ずつ進める（通信はしない）
+      if (!Store.fresh) return;
+      document.title = viewTitle();
+      const now = view.querySelector('[data-now-clock]');
+      if (now) now.innerHTML = clockHTML(ms);
+      return;
+    }
     document.title = `${U.clockParts(ms).join(':')}｜つみあげ`;
     if (route !== 'timer') return;
     const clock = view.querySelector('[data-clock]');
@@ -1095,6 +1239,8 @@
   /* ======================================================================
      ボタンの動き
      ====================================================================== */
+  // 見るだけの画面で使えるのは、表示を切りかえる操作と、最新にする操作だけ
+  const VIEW_ACTIONS = new Set(['period', 'period-prev', 'period-next', 'period-now', 'breakdown', 'more', 'sync-click', 'sync-now']);
   const actions = {
     // 科目ボタンは押すたびに「えらぶ／外す」が切りかわる（いくつでもえらべる）
     pick(el) {
@@ -1192,10 +1338,26 @@
     },
     'move-subject'(el) { moveSubject(el.dataset.id, Number(el.dataset.dir)); },
     'sync-click'() {
-      if (Store.mode === 'gas') Store.sync();
+      if (Store.mode === 'gas' || VIEW) Store.sync();
       else navigate('settings');
     },
     'sync-now'() { Store.sync(); },
+    async 'copy-share'() {
+      if (!Store.shareKey) return;
+      const url = shareUrl(Store.shareKey);
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('見る用リンクをコピーしました');
+      } catch (e) {
+        // コピーできない環境では、リンクを選んだ状態にして、手でコピーしてもらう
+        const input = $('#share-url');
+        if (input) {
+          input.focus();
+          input.select();
+        }
+        toast('リンクを選びました。コピーしてください');
+      }
+    },
     'save-token'() {
       const input = $('#token-input');
       const value = input ? input.value.trim() : '';
@@ -1246,6 +1408,7 @@
     }
     const el = e.target.closest('[data-action]');
     if (!el || el.disabled) return;
+    if (VIEW && !VIEW_ACTIONS.has(el.dataset.action)) return;
     const fn = actions[el.dataset.action];
     if (fn) {
       e.preventDefault();
@@ -1254,6 +1417,7 @@
   });
 
   $('#import-file').addEventListener('change', async (e) => {
+    if (VIEW) return;
     const input = e.target;
     const file = input.files && input.files[0];
     input.value = '';
@@ -1298,9 +1462,16 @@
   Store.on('status', () => {
     renderSync();
     // 合言葉の入力欄は、読み込み中と設定画面に出る
-    if (!Store.ready || (route === 'settings' && Store.usesToken)) render();
+    // 見るだけの画面では、「いまの様子」が「確かめています」から変わったときに書き直す
+    if (!Store.ready || (route === 'settings' && Store.usesToken) || (VIEW && nowState() !== shownNow)) render();
   });
 
+  // 見るだけの画面：名前を出して、ロゴから記録の画面へ戻れるようにする
+  if (VIEW) {
+    document.body.classList.add('is-view');
+    $('.brand__name').textContent = VIEW_TITLE;
+    $('.brand').setAttribute('href', `#/${ROUTES[0].id}`);
+  }
   $('#brand-mark').innerHTML = MARK;
   Charts.setupTooltip();
   Store.init();

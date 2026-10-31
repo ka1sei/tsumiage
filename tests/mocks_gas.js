@@ -105,7 +105,14 @@ const GasMock = (() => {
     MimeType: { JSON: 'application/json' },
     createTextOutput: (text) => ({ text, mime: 'text/plain', setMimeType(m) { this.mime = m; return this; }, getContent() { return this.text; } }),
   };
-  window.Utilities = { getUuid: () => '123e4567-e89b-42d3-a456-426614174000' };
+  // 呼ぶたびにちがう値を返す（合言葉と見る用の鍵が、同じにならないように）
+  let uuidCount = 0;
+  window.Utilities = {
+    getUuid: () => {
+      uuidCount += 1;
+      return `${(0x1a2b3c00 + uuidCount).toString(16)}-e89b-42d3-a456-426614174000`;
+    },
+  };
 
   return { reset, get spreadsheet() { return spreadsheet; }, get props() { return props; } };
 })();

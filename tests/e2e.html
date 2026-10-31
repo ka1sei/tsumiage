@@ -32,11 +32,17 @@
   frame.contentWindow.localStorage.clear();
   frame.contentWindow.location.reload();
   await new Promise((r) => frame.addEventListener('load', r, { once: true }));
-  const W = frame.contentWindow;
-  const D = frame.contentDocument;
-  W.addEventListener('error', (e) => errors.push(e.message));
-  W.confirm = () => true;
-  W.alert = (m) => errors.push(`alert: ${m}`);
+  // 再読み込みしたあとも使えるよう、let にしておく（読み込み直したら attach() でつなぎ直す）
+  let W;
+  let D;
+  const attach = () => {
+    W = frame.contentWindow;
+    D = frame.contentDocument;
+    W.addEventListener('error', (e) => errors.push(e.message));
+    W.confirm = () => true;
+    W.alert = (m) => errors.push(`alert: ${m}`);
+  };
+  attach();
   const q = (sel) => D.querySelector(sel);
   const qa = (sel) => [...D.querySelectorAll(sel)];
   const store = () => W.eval('Store');
@@ -53,8 +59,10 @@
   const chip = (name) => qa('.chip').find((b) => b.textContent.trim() === name);
   const recBy = (text) => qa('.rec').find((b) => b.querySelector('.rec__subject').textContent === text);
 
-  await step('最初は6科目のボタンが出る', async () => {
-    ok(qa('.chip').length === 6, `ボタン ${qa('.chip').length}個`);
+  await step('最初は勉強の8科目と、読書の3ジャンルのボタンが2段で出る', async () => {
+    ok(qa('.chip').length === 11, `ボタン ${qa('.chip').length}個`);
+    ok(qa('.pickers__label').map((el) => el.textContent).join() === '勉強,読書', '段の見出しがない');
+    ok(qa('.pickers__group')[1].querySelectorAll('.chip').length === 3, '読書の段のボタンが3つではない');
   });
 
   await step('科目ボタンは押すたびに、えらぶ／外すが切りかわる', async () => {
@@ -159,13 +167,16 @@
     ok(qa('.chip').some((b) => b.textContent.includes('WordPress')), 'ボタンが増えていない');
   });
 
-  await step('科目の並べかえ', async () => {
+  await step('科目の並べかえ（同じ種類の中だけで動く）', async () => {
     W.location.hash = '#/settings';
     await sleep(80);
-    const before = store().subjects().map((s) => s.name);
-    await clickEl(qa('[data-action="move-subject"][data-dir="-1"]').pop(), '上へ');
-    const after = store().subjects().map((s) => s.name);
-    ok(after[after.length - 2] === 'WordPress' && after[after.length - 1] === before[before.length - 2], `並び：${after.join(',')}`);
+    const reading = () => store().subjects(true, 'reading').map((s) => s.name).join();
+    const before = reading();
+    const id = store().subjects(true).find((s) => s.name === 'WordPress').id;
+    await clickEl(q(`[data-action="move-subject"][data-dir="-1"][data-id="${id}"]`), '上へ');
+    const after = store().subjects(true, 'study').map((s) => s.name);
+    ok(after.slice(-2).join() === 'WordPress,TypeScript', `並び：${after.join(',')}`);
+    ok(reading() === before, '読書のジャンルの並びが変わった');
   });
 
   await step('科目を非表示にすると、タイマーのボタンから消える', async () => {
@@ -272,9 +283,128 @@
   await step('再読み込みしても残っている（ブラウザに保存されている）', async () => {
     W.location.reload();
     await new Promise((r) => frame.addEventListener('load', r, { once: true }));
-    const s = frame.contentWindow.eval('Store');
+    attach();
+    const s = store();
     ok(s.state.rewards.length === 2, 'ごほうびが消えた');
     ok(s.subjects(true).some((x) => x.name === 'WordPress'), '科目が消えた');
+  });
+
+  /* ---------- 勉強と読書 ---------- */
+
+  await step('タイマー：読書のジャンルを押すと、勉強の科目は外れて、読書の合計に切りかわる', async () => {
+    W.location.hash = '#/timer';
+    await sleep(80);
+    ok(chip('HTML').getAttribute('aria-pressed') === 'true', '前にえらんだ科目が残っていない');
+    ok(q('.today .label').textContent === '今日の勉強時間', `見出し：${q('.today .label').textContent}`);
+    await clickEl(chip('株'), '株');
+    ok(chip('株').getAttribute('aria-pressed') === 'true', '株がえらばれていない');
+    ok(qa('.pickers__group')[0].querySelectorAll('[aria-pressed="true"]').length === 0, '勉強の科目が外れていない');
+    ok(q('.today .label').textContent === '今日の読書時間', `見出し：${q('.today .label').textContent}`);
+    ok(q('.stage__status').textContent.includes('ジャンルをえらんで'), `案内：${q('.stage__status').textContent}`);
+  });
+
+  await step('読書をスタート →「読書中」→ 終了すると、読書の記録になる', async () => {
+    await clickEl(chip('投資信託'), '投資信託');
+    await clickEl(q('[data-action="start"]'), 'スタート');
+    ok(JSON.stringify(store().state.timer.subjectIds) === '["sub_stock","sub_fund"]', `ジャンル ${store().state.timer.subjectIds}`);
+    ok(q('.stage--running') && q('.stage__status').textContent.includes('読書中'), `状態：${q('.stage__status').textContent}`);
+    W.eval(`Store.setTimer({ ...Store.state.timer, elapsedMs: 40 * 60 * 1000, runningSince: Date.now(), startedAt: Date.now() - 41 * 60 * 1000 })`);
+    await sleep(60);
+    await clickEl(q('[data-action="stop"]'), '終了して記録');
+    const dlgEl = D.querySelector('#dialog');
+    ok(dlgEl.querySelector('legend').textContent.startsWith('ジャンル'), 'ジャンルをえらぶ欄になっていない');
+    ok(!dlgEl.querySelector('input[name="subject"][value="sub_css"]'), '勉強の科目がえらべてしまう');
+    ok(dlgEl.querySelector('textarea').placeholder === '読んだ本、気づいたこと', 'メモの例が読書用ではない');
+    ok([...dlgEl.querySelectorAll('[data-split-id]')].map((el) => el.value).join() === '20,20', '等分されていない');
+    setField('memo', '会社四季報');
+    await send();
+    const list = store().state.sessions;
+    ok(list.length === 2 && list.every((x) => ['sub_stock', 'sub_fund'].includes(x.subjectId)), `記録 ${JSON.stringify(list)}`);
+    ok(q('.today .hero-num').textContent.replace(/\s/g, '') === '40分', `今日の読書：${q('.today .hero-num').textContent}`);
+    ok(recBy('株・投資信託'), '今日の読書の一覧に出ていない');
+  });
+
+  await step('勉強の合計とごほうびには、読書の時間が入らない', async () => {
+    await clickEl(chip('CSS'), 'CSS');
+    ok(q('.today .label').textContent === '今日の勉強時間', '勉強に戻らない');
+    ok(q('.today .hero-num').textContent.replace(/\s/g, '') === '0分', `今日の勉強：${q('.today .hero-num').textContent}`);
+    W.location.hash = '#/rewards';
+    await sleep(80);
+    ok(q('.kind-tabs [aria-pressed="true"]').textContent.trim() === '勉強', '勉強がえらばれていない');
+    ok(q('.rw-hero .hero-num').textContent.replace(/\s/g, '') === '0分', `これまでの勉強時間：${q('.rw-hero .hero-num').textContent}`);
+    await clickEl(q('.kind-tabs [data-value="reading"]'), '読書');
+    ok(q('.rw-hero .label').textContent === 'これまでの読書時間', '読書に切りかわらない');
+    ok(q('.rw-hero .hero-num').textContent.replace(/\s/g, '') === '40分', `これまでの読書時間：${q('.rw-hero .hero-num').textContent}`);
+    ok(!q('.road__item'), '勉強のごほうびが出ている');
+  });
+
+  await step('読書のごほうびは、読書の時間で数える', async () => {
+    await clickEl(q('.road .sec-head [data-action="add-reward"][data-kind="reading"]'), '追加');
+    const dlgEl = D.querySelector('#dialog');
+    ok(dlgEl.querySelector('.dlg__title').textContent === '読書のごほうびを追加', 'タイトル');
+    const options = [...dlgEl.querySelectorAll('select[name="subjectId"] option')].map((o) => o.textContent);
+    ok(options[0] === 'すべてのジャンルの合計' && options.includes('株だけ') && !options.includes('CSSだけ'), `えらべるもの：${options.join(',')}`);
+    setField('title', '新しい本');
+    setField('hours', '1');
+    await send();
+    await sleep(400);
+    ok(!D.querySelector('#dialog').open, '届いていないのにお知らせが出た');
+    const r = store().state.rewards.find((x) => x.title === '新しい本');
+    ok(r && r.kind === 'reading', `ごほうびの種類 ${r && r.kind}`);
+    ok(q('.road__item.is-next .meter'), '進み具合のバーがない');
+    ok(!q('.road__item .tag'), '「〇〇だけ」の印が出ている');
+  });
+
+  await step('記録画面：勉強｜読書の切りかえで、合計と内訳が変わる', async () => {
+    W.location.hash = '#/stats';
+    await sleep(80);
+    await clickEl(q('[data-action="period"][data-value="day"]'), '日');
+    ok(q('.kind-tabs [aria-pressed="true"]').textContent.trim() === '読書', 'ごほうびの画面でえらんだ読書のままではない');
+    ok(q('.summary .label').textContent === '読書時間の合計', `見出し：${q('.summary .label').textContent}`);
+    ok(q('.summary .hero-num').textContent.replace(/\s/g, '') === '40分', `合計：${q('.summary .hero-num').textContent}`);
+    ok(q('#breakdown-h').textContent === 'ジャンルごと', '内訳の見出し');
+    await clickEl(q('[data-action="breakdown"][data-value="text"]'), 'テキスト');
+    ok(q('.table thead th').textContent === 'ジャンル', '表の見出し');
+    await clickEl(q('.kind-tabs [data-value="study"]'), '勉強');
+    ok(q('.summary .hero-num').textContent.replace(/\s/g, '') === '0分', `勉強の合計：${q('.summary .hero-num').textContent}`);
+    ok(q('#breakdown-h').textContent === '科目ごと', '内訳の見出しが戻らない');
+  });
+
+  await step('記録画面の「手で追加」は、見ている種類で足す', async () => {
+    await clickEl(q('.kind-tabs [data-value="reading"]'), '読書');
+    await clickEl(q('[data-action="add-session"][data-kind="reading"]'), '手で追加');
+    ok(D.querySelector('#dialog .dlg__title').textContent === '読書の記録を追加', 'タイトル');
+    ok(!D.querySelector('#dialog input[name="subject"][value="sub_html"]'), '勉強の科目がえらべてしまう');
+    toggle(D.querySelector('#dialog input[name="subject"][value="sub_btc"]'), true);
+    typeInto(D.querySelector('#dialog [name="h"]'), '0');
+    typeInto(D.querySelector('#dialog [name="m"]'), '30');
+    await send();
+    ok(store().state.sessions.some((x) => x.subjectId === 'sub_btc' && x.seconds === 1800), '読書の記録が足されていない');
+    ok(q('.summary .hero-num').textContent.replace(/\s/g, '') === '1時間10分', `合計：${q('.summary .hero-num').textContent}`);
+  });
+
+  await step('設定：勉強の科目と読書のジャンルが分かれていて、ジャンルを足せる', async () => {
+    W.location.hash = '#/settings';
+    await sleep(80);
+    ok(q('#subj-h').textContent === '勉強の科目' && q('#genre-h').textContent === '読書のジャンル', '見出し');
+    ok(q('[data-action="move-subject"][data-dir="-1"][data-id="sub_stock"]').disabled, 'ジャンルの先頭を、勉強の科目のほうへ動かせてしまう');
+    await clickEl(q('[data-action="add-subject"][data-kind="reading"]'), 'ジャンルを追加');
+    ok(D.querySelector('#dialog .dlg__title').textContent === 'ジャンルを追加', 'タイトル');
+    setField('name', '株');
+    await send();
+    ok(D.querySelector('#dialog .form-error').textContent.includes('同じ名前のジャンル'), '同じ名前を止めていない');
+    setField('name', '小説');
+    await send();
+    const novel = store().subjects(true, 'reading').find((x) => x.name === '小説');
+    ok(novel && novel.color === 'blue', `足したジャンル ${JSON.stringify(novel)}`);
+    W.location.hash = '#/timer';
+    await sleep(80);
+    ok(qa('.pickers__group')[1].textContent.includes('小説'), 'タイマーの読書の段に出ていない');
+  });
+
+  await step('12色すべてに、スタイルの色がある', async () => {
+    const missing = W.eval('COLOR_KEYS').filter((k) => !W.getComputedStyle(D.documentElement).getPropertyValue(`--c-${k}`).trim());
+    ok(!missing.length, `色がない：${missing.join(',')}`);
   });
 
   await step('途中でエラーが出ていない', async () => {

@@ -10,6 +10,9 @@
  * - 合言葉つき：持ち主の画面から。変更を保存して、最新のデータを返す
  * - 見る用の鍵つき：見る用リンクを開いた人の画面から。読むだけで、何も保存しない
  *
+ * 記録には「勉強」と「読書」の2つの種類があります。
+ * 種類は、科目（読書ではジャンル）とごほうびが持っています。記録の種類は、科目を見れば分かります。
+ *
  * @OnlyCurrentDoc
  */
 
@@ -17,28 +20,43 @@
 var TOKEN_PROP = 'apiToken';
 var VIEW_PROP = 'viewKey';
 
-/** 最初に入れておく科目（画面側 store.js の DEFAULT_SUBJECTS と同じ） */
+/** この受付の版。画面は、これを見て「読書」を使えるかを決める（古い版のままだと、種類が保存されないため） */
+var API_VERSION = 2;
+
+/**
+ * 最初に入れておく科目とジャンル（画面側 store.js の DEFAULT_SUBJECTS と同じ）
+ * [ID, 名前, 色, 種類, 足した版]。足した版が 2 のものは、前の版から使っているシートにも1回だけ足す
+ */
 var DEFAULT_SUBJECTS = [
-  ['sub_html', 'HTML', 'orange'],
-  ['sub_css', 'CSS', 'blue'],
-  ['sub_js', 'JavaScript', 'yellow'],
-  ['sub_ps', 'Photoshop', 'green'],
-  ['sub_ai', 'Illustrator', 'magenta'],
-  ['sub_figma', 'Figma', 'violet']
+  ['sub_html', 'HTML', 'orange', 'study', 1],
+  ['sub_css', 'CSS', 'blue', 'study', 1],
+  ['sub_js', 'JavaScript', 'yellow', 'study', 1],
+  ['sub_ps', 'Photoshop', 'green', 'study', 1],
+  ['sub_ai', 'Illustrator', 'magenta', 'study', 1],
+  ['sub_figma', 'Figma', 'violet', 'study', 1],
+  ['sub_react', 'React', 'sky', 'study', 2],
+  ['sub_ts', 'TypeScript', 'navy', 'study', 2],
+  ['sub_stock', '株', 'red', 'reading', 2],
+  ['sub_fund', '投資信託', 'green', 'reading', 2],
+  ['sub_btc', 'ビットコイン', 'yellow', 'reading', 2]
 ];
 
-/** シートの列。type は 文字（text）／数字（number）／はい・いいえ（bool）／日時（date） */
+/** 種類の列（科目とごほうびで同じ）。values にない値は、先頭の study にする */
+var KIND_COL = { key: 'kind', label: '種類（study=勉強、reading=読書）', type: 'text', max: 16, values: ['study', 'reading'] };
+
+/** シートの列。type は 文字（text）／数字（number）／はい・いいえ（bool）／日時（date）。列を足すときは必ず最後に足す */
 var TABLES = {
   subjects: {
     sheet: '科目',
     cols: [
       { key: 'id', label: 'ID', type: 'text', max: 64 },
-      { key: 'name', label: '科目名', type: 'text', max: 40 },
+      { key: 'name', label: '科目名・ジャンル名', type: 'text', max: 40 },
       { key: 'color', label: '色', type: 'text', max: 16 },
       { key: 'order', label: '並び順', type: 'number' },
       { key: 'archived', label: '非表示', type: 'bool' },
       { key: 'deleted', label: '削除済み', type: 'bool' },
-      { key: 'updatedAt', label: '更新日時', type: 'date' }
+      { key: 'updatedAt', label: '更新日時', type: 'date' },
+      KIND_COL
     ]
   },
   sessions: {
@@ -48,7 +66,7 @@ var TABLES = {
       { key: 'subjectId', label: '科目ID', type: 'text', max: 64 },
       { key: 'start', label: '開始', type: 'date' },
       { key: 'end', label: '終了', type: 'date' },
-      { key: 'seconds', label: '勉強時間（秒）', type: 'number' },
+      { key: 'seconds', label: '時間（秒）', type: 'number' },
       { key: 'memo', label: 'メモ', type: 'text', max: 2000 },
       { key: 'deleted', label: '削除済み', type: 'bool' },
       { key: 'updatedAt', label: '更新日時', type: 'date' },
@@ -62,10 +80,11 @@ var TABLES = {
       { key: 'id', label: 'ID', type: 'text', max: 64 },
       { key: 'title', label: 'ごほうび', type: 'text', max: 100 },
       { key: 'hours', label: '目標（時間）', type: 'number' },
-      { key: 'subjectId', label: '数える科目ID（空欄は全科目）', type: 'text', max: 64 },
+      { key: 'subjectId', label: '数える科目ID（空欄は、その種類の合計）', type: 'text', max: 64 },
       { key: 'claimedAt', label: '受け取った日時', type: 'date' },
       { key: 'deleted', label: '削除済み', type: 'bool' },
-      { key: 'updatedAt', label: '更新日時', type: 'date' }
+      { key: 'updatedAt', label: '更新日時', type: 'date' },
+      KIND_COL
     ]
   }
 };
@@ -115,6 +134,7 @@ function viewData_() {
     sessions: readTable_('sessions'),
     rewards: readTable_('rewards'),
     timer: parseJson_(PropertiesService.getScriptProperties().getProperty('timer')),
+    apiVersion: API_VERSION,
     serverTime: Date.now()
   };
 }
@@ -182,7 +202,7 @@ function setup() {
     props.setProperty(TOKEN_PROP, token);
   }
   ensureViewKey_();
-  Logger.log('準備できました。科目 %s件、記録 %s件、ごほうび %s件', res.subjects.length, res.sessions.length, res.rewards.length);
+  Logger.log('準備できました。科目とジャンル %s件、記録 %s件、ごほうび %s件', res.subjects.length, res.sessions.length, res.rewards.length);
   Logger.log('合言葉：%s', token);
   Logger.log('見る用リンクは、アプリの「設定」に出ます。');
 }
@@ -246,6 +266,7 @@ function sync(ops) {
       rewards: liveRecords_(db.rewards),
       timer: timer,
       spreadsheetUrl: SpreadsheetApp.getActive().getUrl(),
+      apiVersion: API_VERSION,
       serverTime: Date.now()
     };
   } finally {
@@ -260,11 +281,12 @@ function loadTable_(name) {
   var ss = SpreadsheetApp.getActive();
   var sheet = ss.getSheetByName(def.sheet);
   var created = false;
+  var added = [];
   if (!sheet) {
     sheet = createSheet_(ss, def);
     created = true;
   } else {
-    ensureHeaders_(sheet, def);
+    added = ensureHeaders_(sheet, def);
   }
 
   var n = def.cols.length;
@@ -277,13 +299,29 @@ function loadTable_(name) {
     if (rec.id) table.index[rec.id] = i;
   });
 
-  if (created && name === 'subjects') {
-    var now = Date.now();
-    DEFAULT_SUBJECTS.forEach(function (s, i) {
-      putRecord_(table, { id: s[0], name: s[1], color: s[2], order: i, archived: false, deleted: false, updatedAt: now });
-    });
+  // 「種類」の列を足したときは、いまある行に「study」を書きこむ（空欄のままだと、シートを見たときに分かりにくい）
+  var kindAdded = added.indexOf('kind') !== -1;
+  if (kindAdded) {
+    table.records.forEach(function (rec, i) { table.changed[i] = true; });
+  }
+  if (name === 'subjects') {
+    if (created) addDefaultSubjects_(table, 1);
+    else if (kindAdded) addDefaultSubjects_(table, 2); // 前の版から使っている人にも、新しい科目とジャンルを1回だけ足す
   }
   return table;
+}
+
+/** 最初の科目とジャンルを足す（同じID、または同じ種類で同じ名前があるものは足さない） */
+function addDefaultSubjects_(table, sinceVersion) {
+  var now = Date.now();
+  var order = table.records.reduce(function (max, r) { return Math.max(max, num_(r.order)); }, -1);
+  DEFAULT_SUBJECTS.forEach(function (s) {
+    if (s[4] < sinceVersion || table.index[s[0]] !== undefined) return;
+    var same = table.records.some(function (r) { return !r.deleted && r.name === s[1] && r.kind === s[3]; });
+    if (same) return;
+    order += 1;
+    putRecord_(table, { id: s[0], name: s[1], color: s[2], kind: s[3], order: order, archived: false, deleted: false, updatedAt: now });
+  });
 }
 
 function createSheet_(ss, def) {
@@ -306,15 +344,17 @@ function createSheet_(ss, def) {
   return sheet;
 }
 
-/** 前の版で作ったシートに、新しく足した列の見出しを書き足す */
+/** 前の版で作ったシートに、新しく足した列の見出しを書き足す。見出しがなかった列（新しく足した列）の key を返す */
 function ensureHeaders_(sheet, def) {
   var n = def.cols.length;
   var labels = def.cols.map(function (c) { return c.label; });
   var current = sheet.getRange(1, 1, 1, n).getValues()[0];
   var same = labels.every(function (label, i) { return current[i] === label; });
-  if (!same) {
-    sheet.getRange(1, 1, 1, n).setValues([labels]).setFontWeight('bold').setBackground('#e0ebfa');
-  }
+  if (same) return [];
+  sheet.getRange(1, 1, 1, n).setValues([labels]).setFontWeight('bold').setBackground('#e0ebfa');
+  return def.cols
+    .filter(function (c, i) { return current[i] === '' || current[i] == null; })
+    .map(function (c) { return c.key; });
 }
 
 function saveTable_(table) {
@@ -357,6 +397,11 @@ function putRecord_(table, raw) {
     return;
   }
   if (num_(rec.updatedAt) >= num_(table.records[i].updatedAt)) {
+    // 前の版の画面は、あとから足した列（種類など）を知らずに送ってくる。そのときは、いまの値を残す
+    var old = table.records[i];
+    table.def.cols.forEach(function (c) {
+      if (raw[c.key] === undefined) rec[c.key] = old[c.key];
+    });
     table.records[i] = rec;
     table.changed[i] = true;
   }
@@ -368,11 +413,16 @@ function liveRecords_(table) {
 
 /* ---------- 値の変換 ---------- */
 
+/** 決まった値しか入らない列（種類）は、ほかの値を先頭の値にする */
+function allowed_(c, s) {
+  return c.values && c.values.indexOf(s) === -1 ? c.values[0] : s;
+}
+
 function cleanRecord_(def, raw) {
   var rec = {};
   def.cols.forEach(function (c) {
     var v = raw[c.key];
-    if (c.type === 'text') rec[c.key] = String(v == null ? '' : v).slice(0, c.max || 500);
+    if (c.type === 'text') rec[c.key] = allowed_(c, String(v == null ? '' : v).slice(0, c.max || 500));
     else if (c.type === 'number') rec[c.key] = num_(v);
     else if (c.type === 'bool') rec[c.key] = v === true;
     else rec[c.key] = v ? num_(v) : null;
@@ -405,7 +455,7 @@ function fromRow_(def, row) {
       rec[c.key] = v === true || String(v).toUpperCase() === 'TRUE';
     } else {
       var s = v == null ? '' : String(v);
-      rec[c.key] = s.charAt(0) === "'" ? s.slice(1) : s;
+      rec[c.key] = allowed_(c, s.charAt(0) === "'" ? s.slice(1) : s);
     }
   });
   return rec;

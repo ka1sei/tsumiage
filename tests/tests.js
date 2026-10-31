@@ -144,6 +144,19 @@ test('割合の表示', () => {
   eq(Charts.pctText(5, 0), '0%');
 });
 
+test('グラフの「科目」は、読書では「ジャンル」と出せる', () => {
+  const rows = 'abcdefg'.split('').map((id, i) => ({ id, name: id, color: 'blue', seconds: (i + 1) * 60 }));
+  ok(Charts.table(rows, 1680, 'ジャンル').includes('<th scope="col">ジャンル</th>'), '表の見出し');
+  ok(Charts.donut(rows, 1680, 'ジャンル').includes('その他（2ジャンル）'), '円グラフの「その他」');
+  ok(Charts.donut(rows, 1680).includes('その他（2科目）'), 'わたさなければ「科目」');
+});
+
+test('色は12色。最初の科目とジャンルの色は、どれも使える色', () => {
+  eq(COLORS.length, 12);
+  eq(new Set(COLOR_KEYS).size, 12, '同じ色がある');
+  ok(DEFAULT_SUBJECTS.every((s) => COLOR_KEYS.includes(s.color)), '使えない色がある');
+});
+
 test('グラフの中の文字も安全にする', () => {
   const html = Charts.hbars([{ id: 'x', name: '<img src=x onerror=alert(1)>', color: 'blue', seconds: 60 }], 60)
     + Charts.donut([{ id: 'x', name: '"><script>', color: 'blue', seconds: 60 }], 60);
@@ -152,12 +165,14 @@ test('グラフの中の文字も安全にする', () => {
 
 /* ---------- データの保存（ブラウザ版） ---------- */
 
-test('ブラウザ版：最初は6科目が入っている', () => {
+test('ブラウザ版：最初は勉強の8科目と、読書の3ジャンルが入っている', () => {
   localStorage.clear();
   Store.init();
   eq(Store.mode, 'local');
-  eq(Store.subjects().map((s) => s.name), ['HTML', 'CSS', 'JavaScript', 'Photoshop', 'Illustrator', 'Figma']);
-  eq(Store.subjects().map((s) => s.color), ['orange', 'blue', 'yellow', 'green', 'magenta', 'violet']);
+  eq(Store.subjects(false, 'study').map((s) => s.name), ['HTML', 'CSS', 'JavaScript', 'Photoshop', 'Illustrator', 'Figma', 'React', 'TypeScript']);
+  eq(Store.subjects(false, 'study').map((s) => s.color), ['orange', 'blue', 'yellow', 'green', 'magenta', 'violet', 'sky', 'navy']);
+  eq(Store.subjects(false, 'reading').map((s) => [s.name, s.color]), [['株', 'red'], ['投資信託', 'green'], ['ビットコイン', 'yellow']]);
+  eq(Store.subjects().length, 11, '種類をわたさなければ全部');
 });
 
 test('ブラウザ版：追加・変更・削除がこの端末に保存される', () => {
@@ -219,20 +234,55 @@ test('バックアップの書き出しと読み込み', () => {
   ok(threw, 'ちがうファイルは読み込まない');
 });
 
+test('ブラウザ版：科目とごほうびの種類が保存される（知らない種類は勉強）', () => {
+  const g = Store.put('subjects', { id: 'sub_novel', name: '小説', color: 'brown', kind: 'reading' });
+  eq([g.kind, g.color], ['reading', 'brown']);
+  eq(Store.put('subjects', { id: 'sub_odd', name: '映画', kind: 'movie' }).kind, 'study', '知らない種類');
+  eq(Store.put('rewards', { id: 'rew_book', title: '本', hours: 5, kind: 'reading' }).kind, 'reading');
+  eq(Store.put('subjects', { id: 'sub_novel', name: '小説（文庫）' }).kind, 'reading', '名前だけ直しても、種類はそのまま');
+  ok(Store.subjects(true, 'reading').some((s) => s.id === 'sub_novel'), '種類でしぼれる');
+  ok(!Store.subjects(true, 'study').some((s) => s.id === 'sub_novel'), '勉強の科目に入っている');
+  const cached = JSON.parse(localStorage.getItem('tsumiage:data:v1'));
+  eq(cached.state.subjects.find((s) => s.id === 'sub_novel').kind, 'reading', '端末にも種類が保存される');
+});
+
+test('ブラウザ版：前の版のデータは勉強として読み、あとから足した科目とジャンルを1回だけ足す', () => {
+  localStorage.setItem('tsumiage:data:v1', JSON.stringify({ v: 1, state: {
+    subjects: [
+      { id: 'sub_html', name: 'HTML', color: 'orange', order: 0 },
+      { id: 'sub_mine', name: 'React', color: 'blue', order: 1 },
+    ],
+    sessions: [{ id: 'ses_old', subjectId: 'sub_html', start: 1, end: 2, seconds: 60 }],
+    rewards: [{ id: 'rew_old', title: 'ランチ', hours: 10 }],
+  } }));
+  Store.init();
+  eq(Store.subject('sub_html').kind, 'study', '前の科目は勉強');
+  eq(Store.state.rewards[0].kind, 'study', '前のごほうびは勉強');
+  ok(!Store.subject('sub_react'), '同じ名前（React）があるので、もう1つは足さない');
+  eq(Store.subjects(true, 'study').map((s) => s.name), ['HTML', 'React', 'TypeScript']);
+  eq(Store.subjects(true, 'reading').map((s) => s.name), ['株', '投資信託', 'ビットコイン']);
+  eq(Store.state.sessions.length, 1, '記録はそのまま');
+  eq(JSON.parse(localStorage.getItem('tsumiage:data:v1')).v, 2, '新しい版として覚える');
+  Store.remove('subjects', 'sub_btc');
+  Store.init();
+  ok(!Store.subject('sub_btc'), '消したジャンルを、また足してしまう');
+});
+
 /* ---------- Apps Script 側（作り物のスプレッドシートで確認） ---------- */
 
 const live = (res, table) => res[table].map((r) => r.id);
 
-test('GAS：最初の同期でシートができ、6科目が入る', () => {
+test('GAS：最初の同期でシートができ、勉強の8科目と読書の3ジャンルが入る', () => {
   GasMock.reset();
   const res = GAS.sync([]);
-  eq(live(res, 'subjects'), ['sub_html', 'sub_css', 'sub_js', 'sub_ps', 'sub_ai', 'sub_figma']);
+  eq(live(res, 'subjects'), ['sub_html', 'sub_css', 'sub_js', 'sub_ps', 'sub_ai', 'sub_figma', 'sub_react', 'sub_ts', 'sub_stock', 'sub_fund', 'sub_btc']);
+  eq(res.subjects.filter((s) => s.kind === 'reading').map((s) => s.name), ['株', '投資信託', 'ビットコイン']);
   eq(res.sessions.length, 0);
   eq(res.timer, null);
   eq(GasMock.spreadsheet.getSheets().map((s) => s.getName()), ['科目', '記録', 'ごほうび'], '空のシート1は消える');
   eq(GasMock.spreadsheet.getSheetByName('記録').data[0][2], '開始', '見出し');
   const again = GAS.sync([]);
-  eq(again.subjects.length, 6, '2回目で科目が増えない');
+  eq(again.subjects.length, 11, '2回目で科目が増えない');
 });
 
 test('GAS：記録が保存され、日時やメモがそのまま戻る', () => {
@@ -349,8 +399,8 @@ test('GAS：おかしなデータは保存しない', () => {
   eq(res.sessions.length, 0);
 });
 
-test('GAS：画面側とGAS側で、最初の科目が同じ', () => {
-  eq(GAS.DEFAULT_SUBJECTS, DEFAULT_SUBJECTS.map((s) => [s.id, s.name, s.color]));
+test('GAS：画面側とGAS側で、最初の科目とジャンルが同じ', () => {
+  eq(GAS.DEFAULT_SUBJECTS, DEFAULT_SUBJECTS.map((s) => [s.id, s.name, s.color, s.kind, s.since]));
 });
 
 /* ---------- 画面（GitHub Pages）から届く、合言葉つきの送信 ---------- */
@@ -443,7 +493,9 @@ test('GAS：見る用の鍵で、記録（メモも）・ごほうび・タイ�
   eq(res.ok, true);
   eq(res.data.sessions.map((s) => [s.id, s.memo]), [['ses_v', 'メモです']]);
   eq(res.data.rewards.map((r) => r.title), ['ランチ']);
-  eq(res.data.subjects.length, 6);
+  eq(res.data.subjects.length, 11);
+  eq(res.data.subjects.find((s) => s.id === 'sub_stock').kind, 'reading', '種類も届く');
+  eq(res.data.apiVersion, 2, '版も届く');
   eq([res.data.timer.state, res.data.timer.subjectIds], ['running', ['sub_html']]);
   ok(!('spreadsheetUrl' in res.data), 'スプレッドシートのURLが入っている');
   ok(!('viewKey' in res.data), '鍵が入っている');
@@ -502,4 +554,74 @@ test('GAS：見る用の読み込みでは、シートを作ったり書きか�
   const res = post({ view: 'key' });
   eq([res.ok, res.data.subjects.length, res.data.sessions.length], [true, 0, 0]);
   eq(GasMock.spreadsheet.getSheets().map((s) => s.getName()), ['シート1'], 'シートが増えた');
+});
+
+/* ---------- 勉強と読書（種類） ---------- */
+
+test('GAS：種類が保存され、知らない種類は勉強になる。シートに見出しと版がある', () => {
+  GasMock.reset();
+  GAS.sync([]);
+  const res = GAS.sync([
+    { type: 'put', table: 'subjects', record: { id: 'sub_g1', name: '小説', color: 'brown', kind: 'reading', updatedAt: 5 } },
+    { type: 'put', table: 'subjects', record: { id: 'sub_g2', name: '映画', color: 'red', kind: 'movie', updatedAt: 5 } },
+    { type: 'put', table: 'rewards', record: { id: 'rew_g1', title: '本', hours: 5, kind: 'reading', updatedAt: 5 } },
+  ]);
+  eq(res.subjects.find((s) => s.id === 'sub_g1').kind, 'reading');
+  eq(res.subjects.find((s) => s.id === 'sub_g2').kind, 'study', '知らない種類');
+  eq(res.rewards[0].kind, 'reading');
+  eq(res.apiVersion, 2);
+  eq(GasMock.spreadsheet.getSheetByName('科目').data[0][7], '種類（study=勉強、reading=読書）', '科目の見出し');
+  eq(GasMock.spreadsheet.getSheetByName('ごほうび').data[0][7], '種類（study=勉強、reading=読書）', 'ごほうびの見出し');
+});
+
+test('GAS：前の版のシートには種類の列が足され、新しい科目とジャンルが1回だけ入る', () => {
+  GasMock.reset();
+  const subj = GasMock.spreadsheet.insertSheet('科目');
+  subj.data = [
+    ['ID', '科目名', '色', '並び順', '非表示', '削除済み', '更新日時'],
+    ['sub_html', 'HTML', 'orange', 0, false, false, new Date(2026, 9, 1)],
+    ['sub_mine', 'TypeScript', 'blue', 1, false, false, new Date(2026, 9, 1)],
+  ];
+  const rew = GasMock.spreadsheet.insertSheet('ごほうび');
+  rew.data = [
+    ['ID', 'ごほうび', '目標（時間）', '数える科目ID（空欄は全科目）', '受け取った日時', '削除済み', '更新日時'],
+    ['rew_old', 'ランチ', 10, '', '', false, new Date(2026, 9, 1)],
+  ];
+  const res = GAS.sync([]);
+  eq(subj.data[0][7], '種類（study=勉強、reading=読書）', '見出しが足された');
+  eq([subj.data[1][7], subj.data[2][7]], ['study', 'study'], '前の行に study が入る');
+  eq(rew.data[1][7], 'study', 'ごほうびの前の行にも入る');
+  eq(res.rewards.map((r) => [r.title, r.kind]), [['ランチ', 'study']]);
+  eq(res.subjects.map((s) => s.name), ['HTML', 'TypeScript', 'React', '株', '投資信託', 'ビットコイン'], '同じ名前（TypeScript）は足さない');
+  eq(res.subjects.filter((s) => s.kind === 'reading').map((s) => s.id), ['sub_stock', 'sub_fund', 'sub_btc']);
+  eq(res.subjects.map((s) => s.order), [0, 1, 2, 3, 4, 5], '前の科目のあとに並ぶ');
+  eq(GAS.sync([]).subjects.length, 6, '2回目は足さない');
+  const btc = res.subjects.find((s) => s.id === 'sub_btc');
+  GAS.sync([{ type: 'put', table: 'subjects', record: { ...btc, deleted: true, updatedAt: btc.updatedAt + 1 } }]);
+  eq(GAS.sync([]).subjects.length, 5, '消したジャンルを、また足してしまう');
+});
+
+test('GAS：前の版の画面から届いた変更でも、種類は消えない（新しく足すものは勉強）', () => {
+  GasMock.reset();
+  const stock = GAS.sync([]).subjects.find((s) => s.id === 'sub_stock');
+  const { kind, ...noKind } = stock; // 前の版の画面は、種類を知らないので送ってこない
+  const res = GAS.sync([
+    { type: 'put', table: 'subjects', record: { ...noKind, order: 99, updatedAt: stock.updatedAt + 1 } },
+    { type: 'put', table: 'subjects', record: { id: 'sub_new', name: '新しい科目', color: 'blue', order: 100, updatedAt: 5 } },
+  ]);
+  const got = res.subjects.find((s) => s.id === 'sub_stock');
+  eq([got.order, got.kind], [99, 'reading'], '並び順は変わり、種類は残る');
+  eq(res.subjects.find((s) => s.id === 'sub_new').kind, 'study');
+});
+
+test('GAS：見る用の読み込みは、前の版のシート（種類の列がない）でも読めて、シートは書きかえない', () => {
+  GasMock.reset();
+  GasMock.props.apiToken = 'tok';
+  GasMock.props.viewKey = 'key';
+  const old = GasMock.spreadsheet.insertSheet('科目');
+  old.data = [['ID', '科目名', '色', '並び順', '非表示', '削除済み', '更新日時'], ['sub_html', 'HTML', 'orange', 0, false, false, new Date(2026, 9, 1)]];
+  const res = post({ view: 'key' });
+  eq(res.data.subjects.map((s) => [s.id, s.kind]), [['sub_html', 'study']]);
+  eq(old.data[0].length, 7, '見出しを足していない');
+  eq(old.data.length, 2, '科目を足していない');
 });

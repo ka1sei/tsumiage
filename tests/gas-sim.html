@@ -50,13 +50,15 @@
   }
   const serverSessions = () => GAS.sync([]).sessions;
 
-  await step('スプレッドシート版として動き、最初の同期で6科目が届く', async () => {
+  await step('スプレッドシート版として動き、最初の同期で勉強の8科目と読書の3ジャンルが届く', async () => {
     ok(Store.mode === 'gas', `mode=${Store.mode}`);
     ok(!Store.ready, '読み込み前は準備中');
     Store.init();
     await sleep(200);
     ok(Store.ready, '準備できていない');
-    ok(Store.subjects().length === 6, `科目 ${Store.subjects().length}`);
+    ok(Store.subjects(false, 'study').length === 8, `科目 ${Store.subjects(false, 'study').length}`);
+    ok(Store.subjects(false, 'reading').map((s) => s.name).join() === '株,投資信託,ビットコイン', 'ジャンルが届いていない');
+    ok(Store.serverVersion === 2, `Apps Script の版 ${Store.serverVersion}`);
     ok(Store.status.kind === 'synced', `状態 ${Store.status.kind}`);
     ok(Store.spreadsheetUrl.includes('docs.google.com'), 'スプレッドシートのURLがない');
   });
@@ -141,6 +143,22 @@
     Store.put('sessions', { id: 'ses_clock', memo: 'あとから直した' });
     await sleep(700);
     ok(serverSessions().find((s) => s.id === 'ses_clock').memo === 'あとから直した', '直した内容が負けた');
+  });
+
+  await step('読書のジャンル・記録・ごほうびが、種類つきで同期される', async () => {
+    Store.batch(() => {
+      Store.put('subjects', { id: 'sub_novel', name: '小説', color: 'brown', order: 20, kind: 'reading' });
+      Store.put('sessions', { id: 'ses_read1', subjectId: 'sub_novel', start: 3000, end: 4000, seconds: 900, memo: '短編を1つ' });
+      Store.put('rewards', { id: 'rew_book', title: '本を買う', hours: 5, kind: 'reading' });
+    });
+    await sleep(700);
+    const server = GAS.sync([]);
+    ok(server.subjects.find((s) => s.id === 'sub_novel').kind === 'reading', 'ジャンルの種類が届いていない');
+    ok(server.rewards.find((r) => r.id === 'rew_book').kind === 'reading', 'ごほうびの種類が届いていない');
+    ok(server.sessions.some((s) => s.id === 'ses_read1'), '読書の記録が届いていない');
+    ok(Store.subject('sub_novel').kind === 'reading' && Store.state.rewards.find((r) => r.id === 'rew_book').kind === 'reading', '同期のあとも画面側で種類が残る');
+    const cached = JSON.parse(localStorage.getItem('tsumiage:data:v1'));
+    ok(cached.serverVersion === 2, 'Apps Script の版を端末に覚えていない');
   });
 
   const pass = results.filter((r) => r[0] === 'PASS').length;

@@ -40,19 +40,22 @@ const Charts = (() => {
 
   /* ---------- 割合の円グラフ（ドーナツ） ---------- */
 
-  /** 6つをこえたら、小さいものを「その他」にまとめる（色が増えすぎると見分けられない） */
-  function fold(rows, maxSegments = 6) {
+  /**
+   * 6つをこえたら、小さいものを「その他」にまとめる（色が増えすぎると見分けられない）
+   * noun は数えるものの呼び方（勉強は「科目」、読書は「ジャンル」）。下の donut・table も同じ
+   */
+  function fold(rows, maxSegments = 6, noun = '科目') {
     if (rows.length <= maxSegments) return rows;
     const keep = new Set([...rows].sort((a, b) => b.seconds - a.seconds).slice(0, maxSegments - 1).map((r) => r.id));
     const others = rows.filter((r) => !keep.has(r.id));
     return [
       ...rows.filter((r) => keep.has(r.id)),
-      { id: '_other', name: `その他（${others.length}科目）`, color: 'other', seconds: others.reduce((a, r) => a + r.seconds, 0) },
+      { id: '_other', name: `その他（${others.length}${noun}）`, color: 'other', seconds: others.reduce((a, r) => a + r.seconds, 0) },
     ];
   }
 
-  function donut(rowsInOrder, total) {
-    const rows = fold(rowsInOrder);
+  function donut(rowsInOrder, total, noun = '科目') {
+    const rows = fold(rowsInOrder, 6, noun);
     const R = 62;
     const C = 2 * Math.PI * R;
     const GAP = rows.length > 1 ? 2 : 0; // 隣の色との間にすき間をあけて、境目をはっきりさせる
@@ -72,7 +75,7 @@ const Charts = (() => {
     return `
     <div class="donut">
       <div class="donut__figure">
-        <svg viewBox="0 0 160 160" aria-label="科目ごとの割合"><g transform="rotate(-90 80 80)">${segments}</g></svg>
+        <svg viewBox="0 0 160 160" aria-label="${noun}ごとの割合"><g transform="rotate(-90 80 80)">${segments}</g></svg>
         <p class="donut__center"><span class="donut__total">${durHTML(total, { compact: true })}</span><span class="donut__label">合計</span></p>
       </div>
       <ul class="legend">${rows.map((r) => `
@@ -86,15 +89,15 @@ const Charts = (() => {
     </div>`;
   }
 
-  /* ---------- 科目ごとの表（テキスト） ---------- */
+  /* ---------- 科目（ジャンル）ごとの表（テキスト） ---------- */
 
-  function table(rows, total) {
+  function table(rows, total, noun = '科目') {
     const sorted = [...rows].sort((a, b) => b.seconds - a.seconds);
     const count = sorted.reduce((a, r) => a + (r.count || 0), 0);
     return `
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th scope="col">科目</th><th scope="col">時間</th><th scope="col">割合</th><th scope="col">回数</th></tr></thead>
+        <thead><tr><th scope="col">${noun}</th><th scope="col">時間</th><th scope="col">割合</th><th scope="col">回数</th></tr></thead>
         <tbody>${sorted.map((r) => `
           <tr>
             <th scope="row"><span class="dot" style="--c:${colorVar(r.color)}"></span>${esc(r.name)}</th>

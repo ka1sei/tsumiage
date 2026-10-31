@@ -8,7 +8,10 @@
    ========================================================================== */
 'use strict';
 
-/** 科目の色。並び順は、色覚の違いがあっても隣どうしを見分けやすい順（検証済み） */
+/**
+ * 科目の色。並び順は、色覚の違いがあっても隣どうしを見分けやすい順（検証済み）。
+ * あとから足した4色（水色〜茶色）は、ほかの11色のどれとも見分けやすいことを確かめた
+ */
 const COLORS = [
   { key: 'blue', name: '青' },
   { key: 'orange', name: 'オレンジ' },
@@ -18,17 +21,32 @@ const COLORS = [
   { key: 'green', name: '緑' },
   { key: 'violet', name: '紫' },
   { key: 'red', name: '赤' },
+  { key: 'sky', name: '水色' },
+  { key: 'navy', name: '紺' },
+  { key: 'lime', name: '黄緑' },
+  { key: 'brown', name: '茶色' },
 ];
 const COLOR_KEYS = COLORS.map((c) => c.key);
 
-/** 最初に入っている科目。Apps Script 側（Code.gs）の DEFAULT_SUBJECTS と同じにしておく */
+/** 記録の種類。読書の時間は、勉強時間とは別に数える（科目とごほうびが種類を持つ） */
+const KINDS = ['study', 'reading'];
+
+/**
+ * 最初に入っている科目とジャンル。Apps Script 側（Code.gs）の DEFAULT_SUBJECTS と同じにしておく。
+ * since は足した版。2 のものは、前の版から使っている人にも1回だけ足す
+ */
 const DEFAULT_SUBJECTS = [
-  { id: 'sub_html', name: 'HTML', color: 'orange' },
-  { id: 'sub_css', name: 'CSS', color: 'blue' },
-  { id: 'sub_js', name: 'JavaScript', color: 'yellow' },
-  { id: 'sub_ps', name: 'Photoshop', color: 'green' },
-  { id: 'sub_ai', name: 'Illustrator', color: 'magenta' },
-  { id: 'sub_figma', name: 'Figma', color: 'violet' },
+  { id: 'sub_html', name: 'HTML', color: 'orange', kind: 'study', since: 1 },
+  { id: 'sub_css', name: 'CSS', color: 'blue', kind: 'study', since: 1 },
+  { id: 'sub_js', name: 'JavaScript', color: 'yellow', kind: 'study', since: 1 },
+  { id: 'sub_ps', name: 'Photoshop', color: 'green', kind: 'study', since: 1 },
+  { id: 'sub_ai', name: 'Illustrator', color: 'magenta', kind: 'study', since: 1 },
+  { id: 'sub_figma', name: 'Figma', color: 'violet', kind: 'study', since: 1 },
+  { id: 'sub_react', name: 'React', color: 'sky', kind: 'study', since: 2 },
+  { id: 'sub_ts', name: 'TypeScript', color: 'navy', kind: 'study', since: 2 },
+  { id: 'sub_stock', name: '株', color: 'red', kind: 'reading', since: 2 },
+  { id: 'sub_fund', name: '投資信託', color: 'green', kind: 'reading', since: 2 },
+  { id: 'sub_btc', name: 'ビットコイン', color: 'yellow', kind: 'reading', since: 2 },
 ];
 
 /**
@@ -91,6 +109,7 @@ const Store = (() => {
   let fresh = false; // この画面を開いてから、1回でもサーバーから最新を受け取れたか
   let spreadsheetUrl = '';
   let shareKey = ''; // 持ち主の画面で使う、見る用リンクの鍵
+  let serverVersion = 0; // Apps Script の版（2 から「読書」の種類を保存できる）
   let token = lsGet(TOKEN_KEY);
   let status = { kind: usesServer ? 'syncing' : mode, lastSync: 0, message: '' };
   const listeners = { data: new Set(), status: new Set() };
@@ -106,6 +125,7 @@ const Store = (() => {
 
   const num = (v, d = 0) => (v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v)) ? Number(v) : d);
   const str = (v, max) => String(v == null ? '' : v).slice(0, max);
+  const toKind = (v) => (KINDS.includes(v) ? v : 'study'); // 種類がない前のデータは、勉強として扱う
 
   const clean = {
     subjects: (r) => ({
@@ -114,6 +134,7 @@ const Store = (() => {
       color: COLOR_KEYS.includes(r.color) ? r.color : 'blue',
       order: num(r.order),
       archived: !!r.archived,
+      kind: toKind(r.kind),
       updatedAt: num(r.updatedAt),
     }),
     // 複数の科目をまとめて勉強したときは、科目ごとの記録に分けて、同じ groupId でつなぐ
@@ -127,12 +148,14 @@ const Store = (() => {
       groupId: str(r.groupId, 64),
       updatedAt: num(r.updatedAt),
     }),
+    // 数える科目（subjectId）が空なら、その種類（勉強／読書）の合計で数える
     rewards: (r) => ({
       id: str(r.id, 64),
       title: str(r.title, 100),
       hours: Math.max(0, num(r.hours)),
       subjectId: str(r.subjectId, 64),
       claimedAt: r.claimedAt ? num(r.claimedAt) : null,
+      kind: toKind(r.kind),
       updatedAt: num(r.updatedAt),
     }),
   };
@@ -172,15 +195,27 @@ const Store = (() => {
   function readCache() {
     try { return JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e) { return null; }
   }
+  // v2：科目とごほうびが「種類」を持つようになった版
   function writeCache() {
     if (mode === 'demo') return;
     try {
       const saved = mode === 'view'
-        ? { v: 1, state, lastSync: status.lastSync }
-        : { v: 1, state, outbox, lastSync: status.lastSync, spreadsheetUrl, shareKey };
+        ? { v: 2, state, lastSync: status.lastSync }
+        : { v: 2, state, outbox, lastSync: status.lastSync, spreadsheetUrl, shareKey, serverVersion };
       localStorage.setItem(cacheKey, JSON.stringify(saved));
     } catch (e) {
       // 保存できない環境では、開いているあいだだけ動かす
+    }
+  }
+
+  /** あとから足した科目とジャンルを足す（ブラウザ版で、前の版から使っている人のため。同じIDか、同じ種類で同じ名前があれば足さない） */
+  function addNewDefaults() {
+    const now = Date.now();
+    let order = Math.max(-1, ...state.subjects.map((s) => s.order));
+    for (const s of DEFAULT_SUBJECTS) {
+      if (s.since < 2 || state.subjects.some((x) => x.id === s.id || (x.name === s.name && x.kind === s.kind))) continue;
+      order += 1;
+      state.subjects.push(clean.subjects({ ...s, order, updatedAt: now }));
     }
   }
 
@@ -304,6 +339,7 @@ const Store = (() => {
       outbox.forEach(applyOp); // 送っている間に増えた変更を上に重ねる
       if (res && res.spreadsheetUrl) spreadsheetUrl = res.spreadsheetUrl;
       if (mode === 'gas' && res && res.viewKey) shareKey = String(res.viewKey);
+      serverVersion = num(res && res.apiVersion);
       const wasReady = ready;
       ready = true;
       fresh = true;
@@ -387,6 +423,7 @@ const Store = (() => {
       status.lastSync = cache.lastSync || 0;
       spreadsheetUrl = cache.spreadsheetUrl || '';
       shareKey = cache.shareKey || '';
+      serverVersion = num(cache.serverVersion);
       ready = true;
     }
 
@@ -394,6 +431,9 @@ const Store = (() => {
       if (!cache) {
         const now = Date.now();
         state.subjects = DEFAULT_SUBJECTS.map((s, i) => clean.subjects({ ...s, order: i, updatedAt: now }));
+        writeCache();
+      } else if (!(cache.v >= 2)) {
+        addNewDefaults();
         writeCache();
       }
       ready = true;
@@ -468,10 +508,12 @@ const Store = (() => {
     get shareKey() { return shareKey; },
     /** この画面を開いてから、サーバーの最新を受け取れたか（見るだけの画面で、古い「勉強中」を出さないため） */
     get fresh() { return fresh; },
-    /** 並び順どおりの科目（all = true で非表示の科目も含める） */
-    subjects(all = false) {
+    /** Apps Script の版（同期するまでは、前に覚えた版。わからなければ 0） */
+    get serverVersion() { return serverVersion; },
+    /** 並び順どおりの科目（all = true で非表示の科目も含める。kind をわたすと、その種類だけ） */
+    subjects(all = false, kind = '') {
       return state.subjects
-        .filter((s) => all || !s.archived)
+        .filter((s) => (all || !s.archived) && (!kind || s.kind === kind))
         .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name, 'ja'));
     },
     subject(id) {
@@ -493,16 +535,19 @@ const Demo = {
     };
 
     const subjects = DEFAULT_SUBJECTS.map((s, i) => ({ ...s, order: i, updatedAt: 1 }));
-    const weights = [['sub_html', 5], ['sub_css', 5], ['sub_js', 4], ['sub_ps', 2], ['sub_ai', 1.5], ['sub_figma', 3]];
-    const totalWeight = weights.reduce((a, w) => a + w[1], 0);
-    const pick = () => {
-      let r = rnd() * totalWeight;
-      for (const [id, w] of weights) {
-        r -= w;
-        if (r < 0) return id;
-      }
-      return weights[0][0];
+    const weights = [['sub_html', 5], ['sub_css', 5], ['sub_js', 4], ['sub_ps', 2], ['sub_ai', 1.5], ['sub_figma', 3], ['sub_react', 2], ['sub_ts', 1.5]];
+    const weighted = (list) => {
+      const total = list.reduce((a, w) => a + w[1], 0);
+      return () => {
+        let r = rnd() * total;
+        for (const [id, w] of list) {
+          r -= w;
+          if (r < 0) return id;
+        }
+        return list[0][0];
+      };
     };
+    const pick = weighted(weights);
     const memos = {
       sub_html: ['フォームのマークアップ', '見出しの構造を見直し', 'テーブルの書き方', ''],
       sub_css: ['Flexboxで横並び', 'Gridでカードを並べる', 'ホバーのアニメーション', ''],
@@ -510,6 +555,11 @@ const Demo = {
       sub_ps: ['写真の切り抜き', 'バナーのレタッチ', ''],
       sub_ai: ['ロゴのトレース', 'アイコンを3つ作る', ''],
       sub_figma: ['オートレイアウト', 'コンポーネントとバリアント', 'LPのワイヤーフレーム', ''],
+      sub_react: ['useStateでカウンター', 'コンポーネントに分ける', ''],
+      sub_ts: ['型の基本', 'interfaceとtype', ''],
+      sub_stock: ['「会社四季報」の読み方', '決算書の入門書 第2章', '高配当株の本', ''],
+      sub_fund: ['インデックス投資の本', 'NISAの解説書', ''],
+      sub_btc: ['ビットコインの仕組み', 'ブロックチェーン入門', ''],
     };
 
     const sessions = [];
@@ -542,26 +592,46 @@ const Demo = {
       }
     }
 
-    const hoursOf = (id) => sessions.filter((s) => !id || s.subjectId === id).reduce((a, s) => a + s.seconds, 0) / 3600;
-    const total = hoursOf();
-    const figma = hoursOf('sub_figma');
-    const first = { id: 'rew_demo1', title: 'ちょっといいランチ', hours: 50, subjectId: '' };
-    const firstAt = U.reachedAt(sessions, 50 * 3600, '');
+    // 読書は夜に、ときどき
+    const pickBook = weighted([['sub_stock', 3], ['sub_fund', 2], ['sub_btc', 1.5]]);
+    for (let i = 300; i >= 0; i -= 1) {
+      if (rnd() > 0.45) continue;
+      const start = U.addDays(today, -i) + (21 * 60 + Math.floor(rnd() * 60)) * 60000;
+      const min = 15 + Math.floor(rnd() * 45);
+      const end = start + min * 60000;
+      if (end > now) continue;
+      const subjectId = pickBook();
+      const list = memos[subjectId];
+      sessions.push({ id: `ses_book${i}`, subjectId, start, end, seconds: min * 60, memo: list[Math.floor(rnd() * list.length)], updatedAt: 1 });
+    }
+
+    const study = new Set(subjects.filter((s) => s.kind === 'study').map((s) => s.id));
+    const studySessions = sessions.filter((s) => study.has(s.subjectId));
+    const bookSessions = sessions.filter((s) => !study.has(s.subjectId));
+    const hoursOf = (list, id) => list.filter((s) => !id || s.subjectId === id).reduce((a, s) => a + s.seconds, 0) / 3600;
+    const total = hoursOf(studySessions);
+    const figma = hoursOf(studySessions, 'sub_figma');
+    const books = hoursOf(bookSessions);
+    const first = { id: 'rew_demo1', title: 'ちょっといいランチ', hours: 50, subjectId: '', kind: 'study' };
+    const firstAt = U.reachedAt(studySessions, 50 * 3600, '');
+    const cafeAt = U.reachedAt(bookSessions, 10 * 3600, '');
     const rewards = [
       { ...first, claimedAt: firstAt ? firstAt + 2 * 86400000 : null, updatedAt: 1 },
-      { id: 'rew_demo2', title: '新しいキーボード', hours: Math.max(100, Math.floor(total / 100) * 100), subjectId: '', claimedAt: null, updatedAt: 1 },
-      { id: 'rew_demo3', title: '温泉に1泊', hours: Math.ceil((total + 20) / 100) * 100, subjectId: '', claimedAt: null, updatedAt: 1 },
-      { id: 'rew_demo4', title: 'Figmaの有料講座', hours: Math.ceil((figma + 6) / 10) * 10, subjectId: 'sub_figma', claimedAt: null, updatedAt: 1 },
+      { id: 'rew_demo2', title: '新しいキーボード', hours: Math.max(100, Math.floor(total / 100) * 100), subjectId: '', kind: 'study', claimedAt: null, updatedAt: 1 },
+      { id: 'rew_demo3', title: '温泉に1泊', hours: Math.ceil((total + 20) / 100) * 100, subjectId: '', kind: 'study', claimedAt: null, updatedAt: 1 },
+      { id: 'rew_demo4', title: 'Figmaの有料講座', hours: Math.ceil((figma + 6) / 10) * 10, subjectId: 'sub_figma', kind: 'study', claimedAt: null, updatedAt: 1 },
+      { id: 'rew_demo5', title: 'カフェで読書', hours: 10, subjectId: '', kind: 'reading', claimedAt: cafeAt ? cafeAt + 86400000 : null, updatedAt: 1 },
+      { id: 'rew_demo6', title: '気になっていた本をまとめ買い', hours: Math.ceil((books + 5) / 10) * 10, subjectId: '', kind: 'reading', claimedAt: null, updatedAt: 1 },
     ];
 
     let timer = null;
-    const m = /[?&]demo=(running|paused)/.exec(location.search);
+    const m = /[?&]demo=(running|paused|reading)/.exec(location.search);
     if (m) {
       const startedAt = now - (83 * 60 + 12) * 1000;
-      const subjectIds = ['sub_html', 'sub_css', 'sub_js'];
-      timer = m[1] === 'running'
-        ? { state: 'running', subjectIds, startedAt, runningSince: startedAt, elapsedMs: 0, updatedAt: 1 }
-        : { state: 'paused', subjectIds, startedAt, runningSince: null, elapsedMs: (52 * 60 + 40) * 1000, updatedAt: 1 };
+      const subjectIds = m[1] === 'reading' ? ['sub_stock'] : ['sub_html', 'sub_css', 'sub_js'];
+      timer = m[1] === 'paused'
+        ? { state: 'paused', subjectIds, startedAt, runningSince: null, elapsedMs: (52 * 60 + 40) * 1000, updatedAt: 1 }
+        : { state: 'running', subjectIds, startedAt, runningSince: startedAt, elapsedMs: 0, updatedAt: 1 };
     }
 
     return { subjects, sessions, rewards, timer };

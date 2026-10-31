@@ -25,6 +25,8 @@
   GAS.sync([
     { type: 'put', table: 'sessions', record: { id: 'ses_v1', subjectId: 'sub_html', start: now - 7200000, end: now - 5400000, seconds: 1800, memo: '見せていいメモ', updatedAt: 1 } },
     { type: 'put', table: 'rewards', record: { id: 'rew_v1', title: 'ランチ', hours: 10, updatedAt: 1 } },
+    { type: 'put', table: 'sessions', record: { id: 'ses_r1', subjectId: 'sub_stock', start: now - 9000000, end: now - 8100000, seconds: 900, memo: '四季報', updatedAt: 1 } },
+    { type: 'put', table: 'rewards', record: { id: 'rew_r1', title: '本を1冊', hours: 3, kind: 'reading', updatedAt: 1 } },
     { type: 'timer', value: { state: 'running', subjectIds: ['sub_css'], startedAt: now - 60000, runningSince: now - 60000, elapsedMs: 0, updatedAt: 2 } },
   ]);
 
@@ -63,7 +65,10 @@
     ok(Store.status.kind === 'synced', `状態 ${Store.status.kind}`);
     const s = Store.state.sessions.find((x) => x.id === 'ses_v1');
     ok(s && s.memo === '見せていいメモ', 'メモが届いていない');
-    ok(Store.state.rewards.length === 1, 'ごほうびが届いていない');
+    ok(Store.state.rewards.length === 2, 'ごほうびが届いていない');
+    ok(Store.subject('sub_stock').kind === 'reading', '読書のジャンルが、勉強の科目として届いた');
+    ok(Store.state.rewards.find((r) => r.id === 'rew_r1').kind === 'reading', '読書のごほうびが、勉強のごほうびとして届いた');
+    ok(Store.state.sessions.some((x) => x.id === 'ses_r1'), '読書の記録が届いていない');
     ok(Store.state.timer.state === 'running' && Store.state.timer.subjectIds[0] === 'sub_css', 'タイマーが届いていない');
     ok(Store.spreadsheetUrl === '', 'スプレッドシートのURLが届いている');
   });
@@ -114,7 +119,7 @@
     Store.sync();
     await sleep(200);
     ok(Store.status.kind === 'error' && !Store.status.auth, `状態 ${JSON.stringify(Store.status)}`);
-    ok(Store.ready && Store.state.sessions.length === 2, '記録が消えた');
+    ok(Store.ready && Store.state.sessions.length === 3, '記録が消えた');
     net.online = true;
   });
 

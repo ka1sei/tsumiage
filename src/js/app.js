@@ -2,6 +2,7 @@
    つみあげ — 画面
    タイマー／記録／ごほうび／設定 の4画面と、入力用のダイアログ
    見る用リンクで開いたときは、記録とごほうびの2画面だけを、見るだけで出す
+   記録は「勉強」と「読書」に分けて数える（読書の時間は、勉強の合計やごほうびに入れない）
    ========================================================================== */
 'use strict';
 
@@ -40,6 +41,8 @@
     upload: svg('<path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 19.5h14"/>'),
     eye: svg('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
     copy: svg('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>'),
+    book: svg('<path d="M12 6.5C10.2 5.2 7.6 4.6 4 4.8v13c3.6-.2 6.2.4 8 1.7 1.8-1.3 4.4-1.9 8-1.7v-13c-3.6-.2-6.2.4-8 1.7zM12 6.5v13"/>'),
+    study: svg('<path d="M2.5 9.5 12 5l9.5 4.5L12 14z"/><path d="M6.5 11.6V16c1.5 1.4 3.4 2 5.5 2s4-.6 5.5-2v-4.4M21.5 9.5V15"/>'),
   };
   const MARK = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
     <rect x="4" y="21" width="23" height="6.5" rx="2" fill="#004fc8"/>
@@ -57,20 +60,27 @@
     // タイマーで選んでいる科目（いくつでも）。null は「まだ選んだことがない」
     selectedIds: Array.isArray(saved.selectedIds) ? saved.selectedIds
       : saved.selected ? [saved.selected] : null,
+    // 最後に押した科目ボタンの種類（何もえらんでいないときに、タイマー画面でどちらの合計を出すか）
+    pickKind: KINDS.includes(saved.pickKind) ? saved.pickKind : 'study',
+    // 記録とごほうびの画面で見ている種類
+    kind: KINDS.includes(saved.kind) ? saved.kind : 'study',
     period: ['day', 'week', 'month', 'year', 'all'].includes(saved.period) ? saved.period : 'week',
     breakdown: ['bar', 'donut', 'text'].includes(saved.breakdown) ? saved.breakdown : 'bar',
     anchor: Date.now(),
     listLimit: 40,
   };
-  // デモでは、URLで表示を指定できる（例：?demo&period=month&breakdown=donut）
+  // デモでは、URLで表示を指定できる（例：?demo&period=month&breakdown=donut&kind=reading）
   if (Store.mode === 'demo') {
     const params = new URLSearchParams(location.search);
     if (['day', 'week', 'month', 'year', 'all'].includes(params.get('period'))) ui.period = params.get('period');
     if (['bar', 'donut', 'text'].includes(params.get('breakdown'))) ui.breakdown = params.get('breakdown');
+    if (KINDS.includes(params.get('kind'))) ui.kind = params.get('kind');
   }
   function saveUi() {
     try {
-      localStorage.setItem(UI_KEY, JSON.stringify({ selectedIds: ui.selectedIds, period: ui.period, breakdown: ui.breakdown }));
+      localStorage.setItem(UI_KEY, JSON.stringify({
+        selectedIds: ui.selectedIds, pickKind: ui.pickKind, kind: ui.kind, period: ui.period, breakdown: ui.breakdown,
+      }));
     } catch (e) { /* 保存できなくても動く */ }
   }
 
@@ -93,7 +103,33 @@
     const n = parseInt(String(v == null ? '' : v).trim(), 10);
     return Number.isFinite(n) && n > 0 ? n : 0;
   };
-  const subjectOf = (id) => Store.subject(id) || { id, name: '（削除した科目）', color: 'other', archived: true };
+  const subjectOf = (id) => Store.subject(id) || { id, name: '（削除した科目）', color: 'other', archived: true, kind: 'study' };
+
+  /* ---------- 勉強と読書 ---------- */
+  const KIND_INFO = {
+    study: { name: '勉強', noun: '科目', doing: '勉強中', did: '勉強した' },
+    reading: { name: '読書', noun: 'ジャンル', doing: '読書中', did: '読書した' },
+  };
+  const kindOf = (subjectId) => subjectOf(subjectId).kind;
+  /** 読書のジャンルが1つでもあるか（なければ、切りかえは出さない） */
+  const hasReading = () => Store.state.subjects.some((s) => s.kind === 'reading');
+  /** その種類の記録だけにする（科目が見つからない記録は、勉強として数える） */
+  function sessionsOf(kind, list = Store.state.sessions) {
+    const reading = new Set(Store.state.subjects.filter((s) => s.kind === 'reading').map((s) => s.id));
+    return list.filter((s) => reading.has(s.subjectId) === (kind === 'reading'));
+  }
+  /** 記録とごほうびの画面で見ている種類 */
+  const shownKind = () => (ui.kind === 'reading' && hasReading() ? 'reading' : 'study');
+  /** 「勉強｜読書」の切りかえ（記録とごほうびの画面の一番上） */
+  function kindTabsHTML() {
+    if (!hasReading()) return '';
+    const k = shownKind();
+    return `
+      <div class="kind-tabs" role="group" aria-label="勉強と読書の切りかえ">
+        <button type="button" aria-pressed="${k === 'study'}" data-action="kind" data-value="study">${ICON.study}勉強</button>
+        <button type="button" aria-pressed="${k === 'reading'}" data-action="kind" data-value="reading">${ICON.book}読書</button>
+      </div>`;
+  }
 
   function elapsedMs(t, now = Date.now()) {
     if (!t || t.state === 'idle') return 0;
@@ -104,14 +140,33 @@
     const t = Store.state.timer;
     return t.state !== 'idle' && t.startedAt >= from ? Math.floor(elapsedMs(t) / 1000) : 0;
   }
-  /** タイマーで選んでいる科目（表示中の科目だけ、並び順どおり） */
+  /** タイマーで選んでいる科目（表示中の科目だけ、並び順どおり。勉強と読書はまぜない） */
   function currentPicks() {
     const visible = Store.subjects();
-    if (ui.selectedIds === null) return visible.length ? [visible[0].id] : [];
-    return visible.filter((s) => ui.selectedIds.includes(s.id)).map((s) => s.id);
+    if (ui.selectedIds === null) {
+      const first = visible.find((s) => s.kind === 'study') || visible[0];
+      return first ? [first.id] : [];
+    }
+    const chosen = visible.filter((s) => ui.selectedIds.includes(s.id));
+    return chosen.filter((s) => s.kind === chosen[0].kind).map((s) => s.id);
   }
   /** タイマーの科目（前の形の subjectId だけのデータにも対応） */
   const timerSubjectIds = (t) => (t.subjectIds && t.subjectIds.length ? t.subjectIds : t.subjectId ? [t.subjectId] : []);
+  const timerKind = (t) => {
+    const ids = timerSubjectIds(t);
+    return ids.length ? kindOf(ids[0]) : 'study';
+  };
+  /**
+   * タイマー画面で出す種類（計測中はその種類。止まっているときは、えらんでいる科目の種類）。
+   * 何もえらんでいなければ、最後に押したボタンの種類（その種類のボタンがもう出ていなければ、勉強）
+   */
+  function homeKind() {
+    const t = Store.state.timer;
+    if (t.state !== 'idle') return timerKind(t);
+    const picks = currentPicks();
+    if (picks.length) return kindOf(picks[0]);
+    return Store.subjects(false, ui.pickKind).length ? ui.pickKind : 'study';
+  }
 
   /** 科目の色の点。複数のときは、色を分けた1つの点にする */
   function dotHTML(subjects) {
@@ -163,15 +218,18 @@
   }
 
   /* ---------- ごほうびの計算 ---------- */
+  /** ごほうびの種類（科目をえらんでいれば、その科目の種類） */
+  const rewardKind = (r) => (r.subjectId && Store.subject(r.subjectId) ? Store.subject(r.subjectId).kind : r.kind);
+  /** ごほうびで数える記録（科目だけ、またはその種類の全部） */
+  const rewardSessions = (r) => (r.subjectId ? Store.state.sessions.filter((s) => s.subjectId === r.subjectId) : sessionsOf(rewardKind(r)));
   function rewardInfo(r) {
-    const { sessions } = Store.state;
-    const sec = U.sumSec(r.subjectId ? sessions.filter((s) => s.subjectId === r.subjectId) : sessions);
+    const sec = U.sumSec(rewardSessions(r));
     const target = r.hours * 3600;
     const achieved = target > 0 && sec >= target;
     return { r, sec, target, achieved, ratio: target ? sec / target : 0, remain: Math.max(0, target - sec) };
   }
   const achievedIds = () => new Set(Store.state.rewards.map(rewardInfo).filter((i) => i.achieved).map((i) => i.r.id));
-  const scopeName = (r) => (r.subjectId ? subjectOf(r.subjectId).name : '合計');
+  const scopeName = (r) => (r.subjectId ? subjectOf(r.subjectId).name : `${KIND_INFO[rewardKind(r)].name}の合計`);
 
   /* ======================================================================
      画面ごとのHTML
@@ -180,12 +238,35 @@
   let lastTimerState = null;
 
   /* ---------- タイマー ---------- */
+  /** 科目ボタン。読書のジャンルもあれば「勉強」「読書」の2段に分ける（ちがう段を押すと、そちらに切りかわる） */
+  function pickersHTML(visible, picks) {
+    const chips = (list) => list.map((s) => `
+        <button type="button" class="chip" aria-pressed="${picks.includes(s.id)}" data-action="pick" data-id="${esc(s.id)}">
+          <span class="dot" style="--c:${colorVar(s.color)}"></span>${esc(s.name)}
+        </button>`).join('');
+    const groups = KINDS.map((k) => ({ k, list: visible.filter((s) => s.kind === k) })).filter((g) => g.list.length);
+    if (groups.length === 1) {
+      const K = KIND_INFO[groups[0].k];
+      return `<div class="chips" role="group" aria-label="${K.name}の${K.noun}（いくつでもえらべます）">${chips(groups[0].list)}</div>`;
+    }
+    return `
+      <div class="pickers">${groups.map(({ k, list }) => `
+        <div class="pickers__group" role="group" aria-labelledby="pick-${k}">
+          <p class="pickers__label" id="pick-${k}">${KIND_INFO[k].name}</p>
+          <div class="chips">${chips(list)}</div>
+        </div>`).join('')}
+      </div>`;
+  }
+
   function viewTimer() {
-    const { timer: t, sessions } = Store.state;
+    const { timer: t } = Store.state;
     const now = Date.now();
     const visible = Store.subjects();
     const active = t.state !== 'idle';
     const picks = currentPicks();
+    const kind = homeKind();
+    const K = KIND_INFO[kind];
+    const sessions = sessionsOf(kind);
     const fresh = lastTimerState !== null && lastTimerState !== t.state ? ' is-fresh' : '';
     lastTimerState = t.state;
 
@@ -194,18 +275,17 @@
       const subs = timerSubjectIds(t).map(subjectOf);
       head = `<p class="stage__subject">${dotHTML(subs)}<span>${esc(namesText(subs))}</span></p>`;
     } else if (visible.length) {
-      head = `<div class="chips" role="group" aria-label="勉強する科目（いくつでもえらべます）">${visible.map((s) => `
-        <button type="button" class="chip" aria-pressed="${picks.includes(s.id)}" data-action="pick" data-id="${esc(s.id)}">
-          <span class="dot" style="--c:${colorVar(s.color)}"></span>${esc(s.name)}
-        </button>`).join('')}
-      </div>`;
+      head = pickersHTML(visible, picks);
     } else {
       head = '<p class="stage__empty">科目がありません。<a href="#/settings">設定</a>で追加してください。</p>';
     }
 
-    const statusText = t.state === 'running' ? `${U.timeLabel(t.startedAt)} から計測中`
+    const kindsShown = new Set(visible.map((s) => s.kind));
+    const askPick = kindsShown.size > 1 ? '科目かジャンルをえらんでください'
+      : `${KIND_INFO[kindsShown.has('reading') ? 'reading' : 'study'].noun}をえらんでください`;
+    const statusText = t.state === 'running' ? `${U.timeLabel(t.startedAt)} から${K.doing}`
       : t.state === 'paused' ? '一時停止中'
-        : picks.length ? '科目をえらんでスタート（いくつでもえらべます）' : '科目をえらんでください';
+        : picks.length ? `${K.noun}をえらんでスタート<span class="stage__hint">（いくつでもえらべます）</span>` : askPick;
     const buttons = t.state === 'running'
       ? `<button type="button" class="btn btn--on-color" data-action="pause">${ICON.pause}一時停止</button>
          <button type="button" class="btn btn--white" data-action="stop">${ICON.stop}終了して記録</button>`
@@ -238,7 +318,7 @@
 
       <div class="home__side">
         <section class="today" aria-labelledby="today-h">
-          <h2 class="label" id="today-h">今日の勉強時間</h2>
+          <h2 class="label" id="today-h">今日の${K.name}時間</h2>
           <p class="hero-num">${live('day', r.day.start)}</p>
           <dl class="tiles">
             <div class="tile"><dt>今週</dt><dd>${live('week', r.week.start, true)}</dd></div>
@@ -248,12 +328,12 @@
           ${active ? '<p class="note">計測中の時間も入っています。</p>' : ''}
         </section>
 
-        ${nextRewardHTML()}
+        ${nextRewardHTML(kind)}
 
         <section class="panel" aria-labelledby="todays-h">
           <div class="sec-head">
-            <h2 class="sec-title" id="todays-h">今日の記録</h2>
-            <button type="button" class="btn btn--text" data-action="add-session">${ICON.plus}手で追加</button>
+            <h2 class="sec-title" id="todays-h">${hasReading() ? `今日の${K.name}` : '今日の記録'}</h2>
+            <button type="button" class="btn btn--text" data-action="add-session" data-kind="${kind}">${ICON.plus}手で追加</button>
           </div>
           ${todays.length ? recordList(toEntries(todays)) : '<p class="empty">まだ記録がありません。タイマーを終了すると、ここに並びます。</p>'}
         </section>
@@ -261,13 +341,14 @@
     </div>`;
   }
 
-  function nextRewardHTML() {
-    const infos = Store.state.rewards.map(rewardInfo);
+  /** 次のごほうび（その種類のごほうびだけ）。押すと、ごほうびの画面をその種類で開く */
+  function nextRewardHTML(kind) {
+    const infos = Store.state.rewards.filter((r) => rewardKind(r) === kind).map(rewardInfo);
     if (!infos.length) {
       return `
-      <a class="panel next next--empty" href="#/rewards">
+      <a class="panel next next--empty" href="#/rewards" data-kind="${kind}">
         <span class="next__label">ごほうび</span>
-        <span class="next__title">勉強時間に応じて、自分へのごほうびを決めておけます。</span>
+        <span class="next__title">${kind === 'reading' ? '読書の時間' : '勉強時間'}に応じて、自分へのごほうびを決めておけます。</span>
         <span class="next__link">ごほうびを決める</span>
       </a>`;
     }
@@ -276,7 +357,7 @@
     const notice = unclaimed ? `<span class="next__notice">${ICON.gift}受け取っていないごほうびが${unclaimed}つあります</span>` : '';
     if (!next) {
       return `
-      <a class="panel next" href="#/rewards">
+      <a class="panel next" href="#/rewards" data-kind="${kind}">
         ${notice}
         <span class="next__label">ごほうび</span>
         <span class="next__title">決めたごほうびは、すべて達成しました。</span>
@@ -284,7 +365,7 @@
       </a>`;
     }
     return `
-    <a class="panel next" href="#/rewards">
+    <a class="panel next" href="#/rewards" data-kind="${kind}">
       ${notice}
       <span class="next__head">
         <span class="next__label">次のごほうび</span>
@@ -353,7 +434,7 @@
     return rows;
   }
 
-  function trendHTML(p, anchor, sessions, now) {
+  function trendHTML(p, anchor, sessions, now, K) {
     if (p === 'day' || p === 'all') return '';
     const bucketList = U.buckets(p, anchor, sessions);
     const bars = bucketList.map((b) => {
@@ -368,14 +449,16 @@
     const title = p === 'year' ? '月ごと' : '日ごと';
     return `
       <section class="panel trend" aria-labelledby="trend-h">
-        <div class="sec-head"><h2 class="sec-title" id="trend-h">${title}の勉強時間</h2></div>
+        <div class="sec-head"><h2 class="sec-title" id="trend-h">${title}の${K.name}時間</h2></div>
         ${Charts.columns(bars)}
         ${Charts.columnsTable(bars, p === 'year' ? '月' : '日付')}
       </section>`;
   }
 
   function viewStats() {
-    const { sessions } = Store.state;
+    const kind = shownKind();
+    const K = KIND_INFO[kind];
+    const sessions = sessionsOf(kind);
     const now = Date.now();
     const p = ui.period;
     if (p !== 'all' && ui.anchor > now) ui.anchor = now;
@@ -397,7 +480,7 @@
         meta.push(word);
       }
     }
-    if (p !== 'day' && list.length) meta.push(`勉強した日 ${new Set(list.map((s) => U.startOfDay(s.start))).size}日`);
+    if (p !== 'day' && list.length) meta.push(`${K.did}日 ${new Set(list.map((s) => U.startOfDay(s.start))).size}日`);
     meta.push(`記録 ${entries.length}件`);
     if (p === 'all' && list.length) meta.push(`${U.fullDate(Math.min(...list.map((s) => s.start)))}から`);
 
@@ -406,8 +489,8 @@
     const views = [['bar', '棒グラフ'], ['donut', '円グラフ'], ['text', 'テキスト']];
     let breakdownBody = '<p class="empty">この期間の記録はありません。</p>';
     if (rows.length) {
-      breakdownBody = ui.breakdown === 'donut' ? Charts.donut(rows, total)
-        : ui.breakdown === 'text' ? Charts.table(rows, total)
+      breakdownBody = ui.breakdown === 'donut' ? Charts.donut(rows, total, K.noun)
+        : ui.breakdown === 'text' ? Charts.table(rows, total, K.noun)
           : Charts.hbars(rows, total);
     }
 
@@ -421,6 +504,7 @@
     const rest = entries.length - shown.length;
 
     return `
+    ${kindTabsHTML()}
     <div class="stats">
       <div class="filters">
         <div class="seg" role="group" aria-label="集計する期間">${PERIOD_TABS.map(([v, l]) => `
@@ -436,16 +520,16 @@
       </div>
 
       <section class="summary" aria-label="合計">
-        <h2 class="label">${p === 'all' ? 'これまでの合計' : '合計'}</h2>
+        <h2 class="label">${p === 'all' ? `これまでの${K.name}時間` : `${K.name}時間の合計`}</h2>
         <p class="hero-num hero-num--xl">${durHTML(total)}</p>
         <ul class="summary__meta">${meta.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>
       </section>
 
       <div class="stats__grid${p === 'day' || p === 'all' ? ' stats__grid--single' : ''}">
-        ${trendHTML(p, anchor, sessions, now)}
+        ${trendHTML(p, anchor, sessions, now, K)}
         <section class="panel breakdown" aria-labelledby="breakdown-h">
           <div class="sec-head sec-head--wrap">
-            <h2 class="sec-title" id="breakdown-h">科目ごと</h2>
+            <h2 class="sec-title" id="breakdown-h">${K.noun}ごと</h2>
             <div class="seg seg--small" role="group" aria-label="表示のしかた">${views.map(([v, l]) => `
               <button type="button" aria-pressed="${ui.breakdown === v}" data-action="breakdown" data-value="${v}">${l}</button>`).join('')}
             </div>
@@ -457,7 +541,7 @@
       <section class="panel" aria-labelledby="list-h">
         <div class="sec-head">
           <h2 class="sec-title" id="list-h">記録</h2>
-          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-session">${ICON.plus}手で追加</button>`}
+          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-session" data-kind="${kind}">${ICON.plus}手で追加</button>`}
         </div>
         ${list.length ? recordList(shown, { group: p !== 'day', dayTotals }) : '<p class="empty">この期間の記録はありません。</p>'}
         ${rest > 0 ? `<button type="button" class="btn btn--quiet btn--block" data-action="more">さらに表示（残り${rest}件）</button>` : ''}
@@ -469,7 +553,7 @@
   function roadItem(info, isNext) {
     const { r } = info;
     const subj = r.subjectId ? subjectOf(r.subjectId) : null;
-    const at = info.achieved ? U.reachedAt(Store.state.sessions, info.target, r.subjectId) : null;
+    const at = info.achieved ? U.reachedAt(rewardSessions(r), info.target, r.subjectId) : null;
     const cls = info.achieved ? (r.claimedAt ? 'is-claimed' : 'is-achieved') : isNext ? 'is-next' : '';
     let body;
     if (info.achieved) {
@@ -495,38 +579,43 @@
   }
 
   function viewRewards() {
-    const { sessions, rewards } = Store.state;
+    const kind = shownKind();
+    const K = KIND_INFO[kind];
+    const sessions = sessionsOf(kind);
     const total = U.sumSec(sessions);
     const first = sessions.length ? Math.min(...sessions.map((s) => s.start)) : null;
-    const infos = rewards.map(rewardInfo).sort((a, b) => a.r.hours - b.r.hours || a.r.title.localeCompare(b.r.title, 'ja'));
+    const infos = Store.state.rewards.filter((r) => rewardKind(r) === kind).map(rewardInfo)
+      .sort((a, b) => a.r.hours - b.r.hours || a.r.title.localeCompare(b.r.title, 'ja'));
     const next = infos.filter((i) => !i.achieved).sort((a, b) => a.remain - b.remain)[0];
     const subjectsWithTime = breakdownRows(sessions);
+    const example = kind === 'reading' ? '「読書の合計30時間で、新しい本を1冊」' : '「合計100時間で、ちょっといいランチ」';
 
     return `
+    ${kindTabsHTML()}
     <div class="rewards">
       <section class="rw-hero" aria-labelledby="rw-total-h">
-        <h2 class="label" id="rw-total-h">これまでの勉強時間</h2>
+        <h2 class="label" id="rw-total-h">これまでの${K.name}時間</h2>
         <p class="hero-num hero-num--xl">${durHTML(total)}</p>
         ${first ? `<p class="meta">${U.fullDate(first)}から記録しています。</p>`
           : `<p class="meta">${VIEW ? 'まだ記録がありません。' : '記録をつけると、ここに合計が出ます。'}</p>`}
         ${subjectsWithTime.length ? `
-        <ul class="rw-subjects" aria-label="科目ごとの合計">${subjectsWithTime.sort((a, b) => b.seconds - a.seconds).map((s) => `
+        <ul class="rw-subjects" aria-label="${K.noun}ごとの合計">${subjectsWithTime.sort((a, b) => b.seconds - a.seconds).map((s) => `
           <li><span class="dot" style="--c:${colorVar(s.color)}"></span><span class="rw-subjects__name">${esc(s.name)}</span><span class="rw-subjects__val">${esc(durText(s.seconds))}</span></li>`).join('')}
         </ul>` : ''}
       </section>
 
       <section class="panel road" aria-labelledby="road-h">
         <div class="sec-head">
-          <h2 class="sec-title" id="road-h">ごほうび</h2>
-          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-reward">${ICON.plus}追加</button>`}
+          <h2 class="sec-title" id="road-h">${hasReading() ? `${K.name}のごほうび` : 'ごほうび'}</h2>
+          ${VIEW ? '' : `<button type="button" class="btn btn--text" data-action="add-reward" data-kind="${kind}">${ICON.plus}追加</button>`}
         </div>
         ${infos.length
           ? `<ol class="road__list">${infos.map((i) => roadItem(i, next && i.r.id === next.r.id)).join('')}</ol>`
           : VIEW ? '<p class="empty">まだごほうびは決まっていません。</p>'
           : `<div class="empty empty--action">
               <p>まだごほうびがありません。</p>
-              <p>「合計100時間で、ちょっといいランチ」のように、時間と内容を決めておけます。</p>
-              <button type="button" class="btn btn--primary" data-action="add-reward">${ICON.plus}ごほうびを追加</button>
+              <p>${example}のように、時間と内容を決めておけます。</p>
+              <button type="button" class="btn btn--primary" data-action="add-reward" data-kind="${kind}">${ICON.plus}ごほうびを追加</button>
             </div>`}
       </section>
     </div>`;
@@ -564,12 +653,23 @@
     if (st === 'idle') {
       const { sessions } = Store.state;
       const now = Date.now();
-      const today = U.sumSec(U.inRange(sessions, U.periodRange('day', now)));
+      const day = U.periodRange('day', now);
       const last = sessions.length ? Math.max(...sessions.map((s) => s.end || s.start)) : 0;
+      const lastLine = last ? `<p class="now__line">最後の記録：${esc(whenLabel(last, now))}</p>` : '';
+      if (hasReading()) {
+        const todayOf = (k) => esc(durText(U.sumSec(U.inRange(sessionsOf(k), day))));
+        return `
+        <section class="now now--idle" aria-label="いまの様子">
+          <p class="now__state">いまは勉強も読書もしていません</p>
+          ${lastLine}
+          <p class="now__line now__today"><span>今日の勉強：${todayOf('study')}</span><span>今日の読書：${todayOf('reading')}</span></p>
+        </section>`;
+      }
+      const today = U.sumSec(U.inRange(sessions, day));
       return `
       <section class="now now--idle" aria-label="いまの様子">
         <p class="now__state">いまは勉強していません</p>
-        ${last ? `<p class="now__line">最後の記録：${esc(whenLabel(last, now))}</p>` : ''}
+        ${lastLine}
         <p class="now__line">${today ? `今日の合計：${esc(durText(today))}` : '今日はまだ勉強していません'}</p>
       </section>`;
     }
@@ -577,7 +677,7 @@
     const running = st === 'running';
     return `
     <section class="now now--${st}" aria-label="いまの様子">
-      <p class="now__state">${running ? '<span class="now__pulse" aria-hidden="true"></span>いま勉強中' : `${ICON.pause}一時停止中`}</p>
+      <p class="now__state">${running ? `<span class="now__pulse" aria-hidden="true"></span>いま${KIND_INFO[timerKind(t)].doing}` : `${ICON.pause}一時停止中`}</p>
       <p class="now__main">
         <span class="now__subject">${dotHTML(subs)}<span>${esc(namesText(subs))}</span></span>
         <span class="now__clock" role="timer" data-now-clock>${clockHTML(elapsedMs(t))}</span>
@@ -609,7 +709,7 @@
     return `
       <section class="panel" aria-labelledby="share-h">
         <div class="sec-head"><h2 class="sec-title" id="share-h">見る用リンク</h2></div>
-        <p class="help">このリンクを開いた人は、記録とごほうびを見られます。<br>いま勉強中かどうかと、メモも見えます。<br>編集はできません。</p>
+        <p class="help">このリンクを開いた人は、記録とごほうびを見られます。<br>${hasReading() ? 'いま勉強中・読書中かどうか' : 'いま勉強中かどうか'}と、メモも見えます。<br>編集はできません。</p>
         ${url ? `
         <input type="text" class="share-url" id="share-url" value="${esc(url)}" readonly aria-label="見る用リンク">
         <div class="btn-row">
@@ -622,12 +722,12 @@
   }
 
   /* ---------- 設定 ---------- */
-  function viewSettings() {
-    const list = Store.subjects(true);
+  /** 科目（読書ではジャンル）の一覧。並べかえは同じ種類の中だけ */
+  function subjectListHTML(kind) {
+    const list = Store.subjects(true, kind);
     const counts = U.bySubject(Store.state.sessions);
-    const mode = Store.mode;
-
-    const subjectsHTML = list.map((s, i) => `
+    if (!list.length) return `<p class="empty">まだ${KIND_INFO[kind].noun}がありません。</p>`;
+    return `<ul class="subj-list">${list.map((s, i) => `
       <li class="subj${s.archived ? ' is-archived' : ''}">
         <span class="dot" style="--c:${colorVar(s.color)}"></span>
         <span class="subj__name">${esc(s.name)}${s.archived ? '<span class="tag">非表示</span>' : ''}</span>
@@ -637,7 +737,19 @@
           <button type="button" class="icon-btn icon-btn--quiet" data-action="move-subject" data-id="${esc(s.id)}" data-dir="1" aria-label="${esc(s.name)}を下へ"${i === list.length - 1 ? ' disabled' : ''}>${ICON.down}</button>
           <button type="button" class="icon-btn icon-btn--quiet" data-action="edit-subject" data-id="${esc(s.id)}" aria-label="${esc(s.name)}を編集">${ICON.edit}</button>
         </span>
-      </li>`).join('');
+      </li>`).join('')}
+    </ul>`;
+  }
+
+  /**
+   * 読書のジャンルを足せるか。
+   * Apps Script が古い版だと「種類」が保存されず、足したジャンルが勉強の科目になってしまうので、新しい版と分かるまで足させない
+   */
+  const canAddReading = () => Store.mode !== 'gas' || Store.serverVersion >= 2;
+
+  function viewSettings() {
+    const mode = Store.mode;
+    const oldServer = mode === 'gas' && Store.fresh && Store.serverVersion < 2;
 
     let dataHTML;
     if (mode === 'gas') {
@@ -669,11 +781,21 @@
     <div class="settings">
       <section class="panel" aria-labelledby="subj-h">
         <div class="sec-head">
-          <h2 class="sec-title" id="subj-h">科目</h2>
-          <button type="button" class="btn btn--text" data-action="add-subject">${ICON.plus}科目を追加</button>
+          <h2 class="sec-title" id="subj-h">勉強の科目</h2>
+          <button type="button" class="btn btn--text" data-action="add-subject" data-kind="study">${ICON.plus}科目を追加</button>
         </div>
         <p class="help">並び順は、タイマーの科目ボタンの順番です。<br>使わなくなった科目は、編集から非表示にできます。</p>
-        <ul class="subj-list">${subjectsHTML}</ul>
+        ${subjectListHTML('study')}
+      </section>
+
+      <section class="panel" aria-labelledby="genre-h">
+        <div class="sec-head">
+          <h2 class="sec-title" id="genre-h">読書のジャンル</h2>
+          ${canAddReading() ? `<button type="button" class="btn btn--text" data-action="add-subject" data-kind="reading">${ICON.plus}ジャンルを追加</button>` : ''}
+        </div>
+        <p class="help">読書の時間は、勉強時間とは別に数えます。<br>並び順は、タイマーのジャンルボタンの順番です。</p>
+        ${oldServer ? '<p class="notice">ジャンルを足すには、Apps Script を新しい版にしてください（「セットアップ手順.md」の「アプリを新しくしたとき」）。いまの版では、ジャンルが勉強の科目として保存されてしまいます。</p>' : ''}
+        ${subjectListHTML('reading')}
       </section>
 
       <section class="panel" aria-labelledby="data-h">
@@ -694,7 +816,8 @@
         <ul class="rules">
           <li>週は月曜日から日曜日で数えます。</li>
           <li>日をまたいだ記録は、始めた日の記録になります。</li>
-          <li>一時停止していた時間は、勉強時間に入りません。</li>
+          <li>一時停止していた時間は、記録に入りません。</li>
+          <li>読書の時間は、勉強時間とは別に数えます（勉強の合計やごほうびには入りません）。</li>
         </ul>
       </section>
     </div>`;
@@ -773,11 +896,11 @@
       : 'データの保存先を見る';
   }
 
-  /** 見るだけの画面のタブの名前（勉強中は時間も出す） */
+  /** 見るだけの画面のタブの名前（勉強中・読書中は時間も出す） */
   function viewTitle() {
     const t = Store.state.timer;
     const st = nowState();
-    if (st === 'running') return `勉強中 ${U.clockParts(elapsedMs(t)).join(':')}｜${VIEW_TITLE}`;
+    if (st === 'running') return `${KIND_INFO[timerKind(t)].doing} ${U.clockParts(elapsedMs(t)).join(':')}｜${VIEW_TITLE}`;
     if (st === 'paused') return `一時停止中｜${VIEW_TITLE}`;
     return BASE_TITLE;
   }
@@ -896,13 +1019,13 @@
     openerKey = '';
   });
 
-  /** 科目のえらび方（いくつでも。チェックボックスを科目ボタンの見た目にする） */
-  function subjectPicker(selectedIds) {
-    const list = Store.subjects(true).filter((s) => !s.archived || selectedIds.includes(s.id));
+  /** 科目のえらび方（その種類の科目から、いくつでも。チェックボックスを科目ボタンの見た目にする） */
+  function subjectPicker(selectedIds, kind) {
+    const list = Store.subjects(true, kind).filter((s) => !s.archived || selectedIds.includes(s.id));
     selectedIds.forEach((id) => { if (!list.some((s) => s.id === id)) list.push(subjectOf(id)); });
     return `
       <fieldset class="field">
-        <legend class="field__label">科目<span class="field__opt">（いくつでもえらべます）</span></legend>
+        <legend class="field__label">${KIND_INFO[kind].noun}<span class="field__opt">（いくつでもえらべます）</span></legend>
         <div class="pick">${list.map((s) => `
           <label class="pick__opt">
             <input type="checkbox" name="subject" value="${esc(s.id)}"${selectedIds.includes(s.id) ? ' checked' : ''}>
@@ -911,26 +1034,27 @@
         </div>
       </fieldset>`;
   }
-  function durationFields(totalSec) {
+  function durationFields(totalSec, kind) {
+    const K = KIND_INFO[kind];
     const { h, m } = U.splitHM(totalSec);
     return `
       <fieldset class="field">
-        <legend class="field__label">勉強時間</legend>
+        <legend class="field__label">${K.name}時間</legend>
         <div class="dur-input">
           <label><input type="number" name="h" value="${h}" min="0" max="24" inputmode="numeric" aria-label="時間"><span>時間</span></label>
           <label><input type="number" name="m" value="${m}" min="0" max="59" inputmode="numeric" aria-label="分"><span>分</span></label>
         </div>
       </fieldset>
       <div class="split" data-split hidden>
-        <p class="field__label">科目ごとの内訳</p>
+        <p class="field__label">${K.noun}ごとの内訳</p>
         <ul class="split__list"></ul>
-        <p class="help">勉強時間を、えらんだ科目で等分しています。<br>科目ごとに直すこともできます。</p>
+        <p class="help">${K.name}時間を、えらんだ${K.noun}で等分しています。<br>${K.noun}ごとに直すこともできます。</p>
       </div>`;
   }
-  function memoField(value) {
+  function memoField(value, kind) {
     return `
       <label class="field"><span class="field__label">メモ<span class="field__opt">（なくてもOK）</span></span>
-        <textarea name="memo" rows="3" maxlength="1000" placeholder="やったこと、気づいたこと">${esc(value)}</textarea>
+        <textarea name="memo" rows="3" maxlength="1000" placeholder="${kind === 'reading' ? '読んだ本、気づいたこと' : 'やったこと、気づいたこと'}">${esc(value)}</textarea>
       </label>`;
   }
   const actionsRow = (primary, cancel = 'キャンセル') => `
@@ -945,10 +1069,11 @@
    * - 科目が2つ以上なら、勉強時間を等分した「内訳」を出す
    * - 勉強時間を直したら内訳を等分し直し、内訳を直したら勉強時間をその合計にする
    * - 時間を何も直さなければ、秒まで正確な時間で記録する
-   * init: { total: 最初の秒数, split: 科目ごとの最初の秒数（Map。編集のとき） }
+   * init: { total: 最初の秒数, split: 科目ごとの最初の秒数（Map。編集のとき）, kind: 勉強か読書か }
    * 戻り値の関数で、えらんだ科目と科目ごとの秒数を読み取る
    */
   function wireTime(form, init) {
+    const K = KIND_INFO[init.kind];
     const hEl = form.elements.h;
     const mEl = form.elements.m;
     const box = form.querySelector('[data-split]');
@@ -1001,7 +1126,8 @@
 
     return function read() {
       const ids = picked();
-      if (!ids.length) return { error: '科目を1つ以上えらんでください。' };
+      if (!ids.length) return { error: `${K.noun}を1つ以上えらんでください。` };
+      if (ids.some((id) => kindOf(id) !== kindOf(ids[0]))) return { error: '勉強と読書は、いっしょに記録できません。' };
       let seconds;
       if (!touched) {
         seconds = keepsInitial(ids) ? ids.map((id) => init.split.get(id)) : splitEvenly(init.total, ids);
@@ -1012,9 +1138,9 @@
         seconds = ids.map((id) => byId.get(id) || 0);
       }
       const total = seconds.reduce((a, b) => a + b, 0);
-      if (total <= 0) return { error: '勉強時間を入力してください。' };
-      if (total > 24 * 3600) return { error: '勉強時間は24時間以内で入力してください。' };
-      if (seconds.some((v) => v <= 0)) return { error: '時間が0分の科目があります。時間を入れるか、その科目のチェックを外してください。' };
+      if (total <= 0) return { error: `${K.name}時間を入力してください。` };
+      if (total > 24 * 3600) return { error: `${K.name}時間は24時間以内で入力してください。` };
+      if (seconds.some((v) => v <= 0)) return { error: `時間が0分の${K.noun}があります。時間を入れるか、その${K.noun}のチェックを外してください。` };
       return { ids, seconds, total };
     };
   }
@@ -1052,14 +1178,15 @@
     if (t.state === 'idle') return;
     const stoppedAt = Date.now();
     const exact = Math.floor(elapsedMs(t, stoppedAt) / 1000);
+    const kind = timerKind(t);
     let read = null;
     openDialog(`
       <form class="dlg" novalidate>
         <h2 class="dlg__title" id="dlg-title">記録する</h2>
-        ${subjectPicker(timerSubjectIds(t))}
-        ${durationFields(exact)}
+        ${subjectPicker(timerSubjectIds(t), kind)}
+        ${durationFields(exact, kind)}
         ${exact >= 8 * 3600 ? '<p class="dlg__note">8時間をこえています。止め忘れていたら、時間を直してから記録してください。</p>' : ''}
-        ${memoField('')}
+        ${memoField('', kind)}
         ${actionsRow('記録する', 'タイマーに戻る')}
         <button type="button" class="btn btn--danger-text dlg__sub" data-action="discard">記録せずに終わる</button>
       </form>`, (fd) => {
@@ -1072,27 +1199,31 @@
         Store.setTimer(Store.idleTimer());
       }, `記録しました（${durText(r.total)}）`);
       return '';
-    }, (form) => { read = wireTime(form, { total: exact, split: null }); });
+    }, (form) => { read = wireTime(form, { total: exact, split: null, kind }); });
   }
 
   /* ---------- 記録の追加・編集 ---------- */
-  function openSessionDialog(key) {
+  /** kindForNew：新しく足すときの種類（編集のときは、記録の科目の種類になる） */
+  function openSessionDialog(key, kindForNew = 'study') {
     const prev = key ? entryRecords(key) : [];
     if (key && !prev.length) return;
     const entry = prev.length ? toEntries(prev)[0] : null;
+    const kind = entry ? kindOf(entry.items[0].subjectId) : (kindForNew === 'reading' ? 'reading' : 'study');
     const start = entry ? entry.start : Date.now() - 3600000;
     const total = entry ? entry.seconds : 3600;
+    // 新しく足すときは、タイマーでえらんでいる科目を最初からえらんでおく（同じ種類のときだけ）
+    const firstPicks = entry ? entry.items.map((s) => s.subjectId) : currentPicks().filter((id) => kindOf(id) === kind);
     let read = null;
     openDialog(`
       <form class="dlg" novalidate>
-        <h2 class="dlg__title" id="dlg-title">${entry ? '記録を編集' : '記録を追加'}</h2>
-        ${subjectPicker(entry ? entry.items.map((s) => s.subjectId) : currentPicks())}
+        <h2 class="dlg__title" id="dlg-title">${entry ? '記録を編集' : `${KIND_INFO[kind].name}の記録を追加`}</h2>
+        ${subjectPicker(firstPicks, kind)}
         <div class="field-row">
           <label class="field"><span class="field__label">日付</span><input type="date" name="date" value="${U.toDateInput(start)}" required></label>
           <label class="field"><span class="field__label">始めた時刻</span><input type="time" name="time" value="${U.toTimeInput(start)}" required></label>
         </div>
-        ${durationFields(total)}
-        ${memoField(entry ? entry.memo : '')}
+        ${durationFields(total, kind)}
+        ${memoField(entry ? entry.memo : '', kind)}
         ${actionsRow(entry ? '保存する' : '追加する')}
         ${entry ? `<button type="button" class="btn btn--danger-text dlg__sub" data-action="delete-session" data-id="${esc(entry.key)}">この記録を削除</button>` : ''}
       </form>`, (fd) => {
@@ -1109,29 +1240,32 @@
       );
       return '';
     }, (form) => {
-      read = wireTime(form, { total, split: entry ? new Map(entry.items.map((s) => [s.subjectId, s.seconds])) : null });
+      read = wireTime(form, { total, split: entry ? new Map(entry.items.map((s) => [s.subjectId, s.seconds])) : null, kind });
     });
   }
 
   /* ---------- ごほうびの追加・編集 ---------- */
-  function openRewardDialog(id) {
+  /** kindForNew：新しく足すときの種類（編集のときは、ごほうびの種類のまま） */
+  function openRewardDialog(id, kindForNew = 'study') {
     const r = id ? Store.state.rewards.find((x) => x.id === id) : null;
     if (id && !r) return;
     const info = r ? rewardInfo(r) : null;
-    const subjects = Store.subjects(true).filter((s) => !s.archived || (r && s.id === r.subjectId));
+    const kind = r ? rewardKind(r) : (kindForNew === 'reading' ? 'reading' : 'study');
+    const K = KIND_INFO[kind];
+    const subjects = Store.subjects(true, kind).filter((s) => !s.archived || (r && s.id === r.subjectId));
     openDialog(`
       <form class="dlg" novalidate>
-        <h2 class="dlg__title" id="dlg-title">${r ? 'ごほうびを編集' : 'ごほうびを追加'}</h2>
+        <h2 class="dlg__title" id="dlg-title">${r ? 'ごほうびを編集' : `${K.name}のごほうびを追加`}</h2>
         <label class="field"><span class="field__label">ごほうびの内容</span>
-          <input type="text" name="title" maxlength="60" required value="${esc(r ? r.title : '')}" placeholder="例：ちょっといいランチ">
+          <input type="text" name="title" maxlength="60" required value="${esc(r ? r.title : '')}" placeholder="${kind === 'reading' ? '例：新しい本を1冊' : '例：ちょっといいランチ'}">
         </label>
-        <div class="field-row">
+        <div class="field-row field-row--stack">
           <label class="field"><span class="field__label">目標の時間</span>
-            <span class="with-unit"><input type="number" name="hours" min="1" max="100000" step="1" inputmode="numeric" required value="${r ? r.hours : ''}" placeholder="100"><span>時間</span></span>
+            <span class="with-unit"><input type="number" name="hours" min="1" max="100000" step="1" inputmode="numeric" required value="${r ? r.hours : ''}" placeholder="${kind === 'reading' ? '30' : '100'}"><span>時間</span></span>
           </label>
-          <label class="field"><span class="field__label">数える科目</span>
+          <label class="field"><span class="field__label">数える${K.noun}</span>
             <select name="subjectId">
-              <option value="">すべての科目の合計</option>
+              <option value="">すべての${K.noun}の合計</option>
               ${subjects.map((s) => `<option value="${esc(s.id)}"${r && r.subjectId === s.id ? ' selected' : ''}>${esc(s.name)}だけ</option>`).join('')}
             </select>
           </label>
@@ -1149,7 +1283,7 @@
       let claimedAt = r ? r.claimedAt : null;
       if (fd.has('claimed')) claimedAt = claimedAt || Date.now();
       else if (info && info.achieved) claimedAt = null;
-      const saved = Store.put('rewards', { id: r ? r.id : U.uid('rew'), title, hours: Math.round(hours), subjectId: String(fd.get('subjectId') || ''), claimedAt });
+      const saved = Store.put('rewards', { id: r ? r.id : U.uid('rew'), title, hours: Math.round(hours), subjectId: String(fd.get('subjectId') || ''), claimedAt, kind });
       toast(r ? '保存しました' : 'ごほうびを追加しました');
       // 追加した時点でもう届いていたら、お知らせする
       if (!r && rewardInfo(saved).achieved && !before.has(saved.id)) setTimeout(() => celebrate(saved.id), 300);
@@ -1175,27 +1309,31 @@
     });
   }
 
-  /* ---------- 科目の追加・編集 ---------- */
-  function nextColor() {
-    const used = new Set(Store.subjects().map((s) => s.color));
+  /* ---------- 科目（読書ではジャンル）の追加・編集 ---------- */
+  /** 同じ種類でまだ使っていない色（色の並び順で、先にあるもの） */
+  function nextColor(kind) {
+    const used = new Set(Store.subjects(false, kind).map((s) => s.color));
     return (COLORS.find((c) => !used.has(c.key)) || COLORS[0]).key;
   }
 
-  function openSubjectDialog(id) {
+  /** kindForNew：新しく足すときの種類（種類は、あとから変えられない） */
+  function openSubjectDialog(id, kindForNew = 'study') {
     const s = id ? Store.subject(id) : null;
     if (id && !s) return;
+    const kind = s ? s.kind : (kindForNew === 'reading' ? 'reading' : 'study');
+    const K = KIND_INFO[kind];
     const sessionsCount = s ? Store.state.sessions.filter((x) => x.subjectId === s.id).length : 0;
     const rewardsCount = s ? Store.state.rewards.filter((x) => x.subjectId === s.id).length : 0;
-    const color = s ? s.color : nextColor();
+    const color = s ? s.color : nextColor(kind);
     const deleteArea = !s ? ''
       : sessionsCount || rewardsCount
-        ? `<p class="dlg__note">記録やごほうびがある科目は削除できません。使わなくなったら「タイマーに表示する」をオフにしてください。</p>`
-        : `<button type="button" class="btn btn--danger-text dlg__sub" data-action="delete-subject" data-id="${esc(s.id)}">この科目を削除</button>`;
+        ? `<p class="dlg__note">記録やごほうびがある${K.noun}は削除できません。使わなくなったら「タイマーに表示する」をオフにしてください。</p>`
+        : `<button type="button" class="btn btn--danger-text dlg__sub" data-action="delete-subject" data-id="${esc(s.id)}">この${K.noun}を削除</button>`;
     openDialog(`
       <form class="dlg" novalidate>
-        <h2 class="dlg__title" id="dlg-title">${s ? '科目を編集' : '科目を追加'}</h2>
-        <label class="field"><span class="field__label">科目名</span>
-          <input type="text" name="name" maxlength="30" required value="${esc(s ? s.name : '')}" placeholder="例：WordPress">
+        <h2 class="dlg__title" id="dlg-title">${s ? `${K.noun}を編集` : `${K.noun}を追加`}</h2>
+        <label class="field"><span class="field__label">${K.noun}名</span>
+          <input type="text" name="name" maxlength="30" required value="${esc(s ? s.name : '')}" placeholder="${kind === 'reading' ? '例：小説' : '例：WordPress'}">
         </label>
         <fieldset class="field">
           <legend class="field__label">色</legend>
@@ -1212,8 +1350,8 @@
         ${deleteArea}
       </form>`, (fd) => {
       const name = String(fd.get('name') || '').trim();
-      if (!name) return '科目名を入力してください。';
-      if (Store.subjects(true).some((x) => x.name === name && x.id !== id)) return '同じ名前の科目がすでにあります。';
+      if (!name) return `${K.noun}名を入力してください。`;
+      if (Store.subjects(true, kind).some((x) => x.name === name && x.id !== id)) return `同じ名前の${K.noun}がすでにあります。`;
       const order = s ? s.order : Math.max(-1, ...Store.state.subjects.map((x) => x.order)) + 1;
       Store.put('subjects', {
         id: s ? s.id : U.uid('sub'),
@@ -1221,33 +1359,45 @@
         color: String(fd.get('color') || color),
         order,
         archived: s ? !fd.has('visible') : false,
+        kind,
       });
       toast(s ? '保存しました' : `「${name}」を追加しました`);
       return '';
     });
   }
 
+  /** 同じ種類の中で、1つ上か下と入れかえる（全体の並び順の番号は、ふり直す） */
   function moveSubject(id, dir) {
-    const list = Store.subjects(true);
-    const i = list.findIndex((s) => s.id === id);
+    const s = Store.subject(id);
+    if (!s) return;
+    const list = Store.subjects(true, s.kind);
+    const i = list.indexOf(s);
     const j = i + dir;
     if (i < 0 || j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
-    Store.batch(() => list.forEach((s, k) => { if (s.order !== k) Store.put('subjects', { ...s, order: k }); }));
+    const all = Store.subjects(true);
+    const a = all.indexOf(list[i]);
+    const b = all.indexOf(list[j]);
+    [all[a], all[b]] = [all[b], all[a]];
+    Store.batch(() => all.forEach((x, k) => { if (x.order !== k) Store.put('subjects', { ...x, order: k }); }));
   }
 
   /* ======================================================================
      ボタンの動き
      ====================================================================== */
   // 見るだけの画面で使えるのは、表示を切りかえる操作と、最新にする操作だけ
-  const VIEW_ACTIONS = new Set(['period', 'period-prev', 'period-next', 'period-now', 'breakdown', 'more', 'sync-click', 'sync-now']);
+  const VIEW_ACTIONS = new Set(['kind', 'period', 'period-prev', 'period-next', 'period-now', 'breakdown', 'more', 'sync-click', 'sync-now']);
   const actions = {
-    // 科目ボタンは押すたびに「えらぶ／外す」が切りかわる（いくつでもえらべる）
+    // 科目ボタンは押すたびに「えらぶ／外す」が切りかわる（同じ種類なら、いくつでもえらべる）
+    // ちがう種類（勉強と読書）のボタンを押したら、そちらだけをえらんだ状態にする
     pick(el) {
-      const chosen = new Set(currentPicks());
-      if (chosen.has(el.dataset.id)) chosen.delete(el.dataset.id);
-      else chosen.add(el.dataset.id);
-      ui.selectedIds = Store.subjects().map((s) => s.id).filter((id) => chosen.has(id));
+      const s = Store.subject(el.dataset.id);
+      if (!s) return;
+      const picks = currentPicks();
+      const chosen = new Set(picks.length && kindOf(picks[0]) === s.kind ? picks : []);
+      if (chosen.has(s.id)) chosen.delete(s.id);
+      else chosen.add(s.id);
+      ui.selectedIds = Store.subjects().map((x) => x.id).filter((id) => chosen.has(id));
+      ui.pickKind = s.kind;
       saveUi();
       render();
     },
@@ -1267,12 +1417,13 @@
     },
     stop: openStopDialog,
     discard() {
-      if (!window.confirm('この勉強時間を記録せずに、タイマーを終わりますか？')) return;
+      const K = KIND_INFO[timerKind(Store.state.timer)];
+      if (!window.confirm(`この${K.name}時間を記録せずに、タイマーを終わりますか？`)) return;
       Store.setTimer(Store.idleTimer());
       closeDialog();
       toast('記録せずに終わりました');
     },
-    'add-session'() { openSessionDialog(null); },
+    'add-session'(el) { openSessionDialog(null, el.dataset.kind); },
     'edit-session'(el) { openSessionDialog(el.dataset.id); },
     'delete-session'(el) {
       if (!window.confirm('この記録を削除しますか？\n削除すると元に戻せません。')) return;
@@ -1280,6 +1431,12 @@
       Store.batch(() => records.forEach((r) => Store.remove('sessions', r.id)));
       closeDialog();
       toast('記録を削除しました');
+    },
+    kind(el) {
+      ui.kind = el.dataset.value === 'reading' ? 'reading' : 'study';
+      ui.listLimit = 40;
+      saveUi();
+      render();
     },
     period(el) {
       ui.period = el.dataset.value;
@@ -1313,7 +1470,7 @@
       ui.listLimit += 40;
       render();
     },
-    'add-reward'() { openRewardDialog(null); },
+    'add-reward'(el) { openRewardDialog(null, el.dataset.kind); },
     'edit-reward'(el) { openRewardDialog(el.dataset.id); },
     'delete-reward'(el) {
       if (!window.confirm('このごほうびを削除しますか？')) return;
@@ -1327,14 +1484,17 @@
       Store.put('rewards', { ...r, claimedAt: Date.now() });
       toast('受け取りました');
     },
-    'add-subject'() { openSubjectDialog(null); },
+    'add-subject'(el) {
+      if (el.dataset.kind === 'reading' && !canAddReading()) return;
+      openSubjectDialog(null, el.dataset.kind);
+    },
     'edit-subject'(el) { openSubjectDialog(el.dataset.id); },
     'delete-subject'(el) {
       const s = Store.subject(el.dataset.id);
       if (!s || !window.confirm(`「${s.name}」を削除しますか？`)) return;
       Store.remove('subjects', s.id);
       closeDialog();
-      toast('科目を削除しました');
+      toast(`${KIND_INFO[s.kind].noun}を削除しました`);
     },
     'move-subject'(el) { moveSubject(el.dataset.id, Number(el.dataset.dir)); },
     'sync-click'() {
@@ -1403,6 +1563,11 @@
     const link = e.target.closest('a[href^="#/"]');
     if (link) {
       e.preventDefault();
+      // タイマー画面の「次のごほうび」から開いたときは、同じ種類（勉強／読書）のごほうびを出す
+      if (KINDS.includes(link.dataset.kind)) {
+        ui.kind = link.dataset.kind;
+        saveUi();
+      }
       navigate(link.getAttribute('href').slice(2));
       return;
     }
@@ -1495,8 +1660,11 @@
         if (grouped) openSessionDialog(grouped.groupId);
       },
       'new-session': () => openSessionDialog(null),
+      'new-reading': () => openSessionDialog(null, 'reading'),
       reward: () => openRewardDialog(firstReward && firstReward.id),
+      'new-reading-reward': () => openRewardDialog(null, 'reading'),
       subject: () => openSubjectDialog('sub_html'),
+      'new-genre': () => openSubjectDialog(null, 'reading'),
       celebrate: () => celebrate('rew_demo2'),
     };
     if (openers[open]) openers[open]();

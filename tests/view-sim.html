@@ -123,6 +123,21 @@
     net.online = true;
   });
 
+  await step('持ち主が非公開にすると、記録を消して「非公開中」になり、公開に戻すとまた見られる', async () => {
+    GAS.sync([{ type: 'share', value: { open: false, updatedAt: Date.now() } }]);
+    Store.sync();
+    await sleep(200);
+    ok(Store.status.kind === 'error' && Store.status.closed && !Store.status.auth, `状態 ${JSON.stringify(Store.status)}`);
+    ok(!Store.ready && !Store.fresh && Store.state.sessions.length === 0, '記録が残っている');
+    ok(localStorage.getItem('tsumiage:view-data:v1') === null, '覚えていた記録が端末に残っている');
+    ok(localStorage.getItem('tsumiage:data:v1') === ownerCache, '持ち主の記録まで消えた');
+    GAS.sync([{ type: 'share', value: { open: true, updatedAt: Date.now() + 1 } }]);
+    Store.sync();
+    await sleep(200);
+    ok(Store.ready && Store.fresh && Store.status.kind === 'synced', '公開に戻しても見られない');
+    ok(Store.state.sessions.length === 3, `記録 ${Store.state.sessions.length}件`);
+  });
+
   await step('見る用の鍵が作り直されたら、覚えていた記録も消して見せない', async () => {
     GAS.resetViewKey();
     Store.sync();

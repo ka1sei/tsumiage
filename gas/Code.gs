@@ -19,9 +19,14 @@
 /** 合言葉と見る用の鍵を入れておく場所の名前（スクリプトのプロパティ） */
 var TOKEN_PROP = 'apiToken';
 var VIEW_PROP = 'viewKey';
+/** 見る用リンクを公開しているか（{ open, updatedAt }。まだ一度も切りかえていなければ、公開中） */
+var SHARE_PROP = 'share';
 
-/** この受付の版。画面は、これを見て「読書」を使えるかを決める（古い版のままだと、種類が保存されないため） */
-var API_VERSION = 2;
+/**
+ * この受付の版。画面は、これを見て使える機能を決める
+ * 2：読書（種類）を保存できる　3：見る用リンクの公開・非公開を切りかえられる
+ */
+var API_VERSION = 3;
 
 /**
  * 最初に入れておく科目とジャンル（画面側 store.js の DEFAULT_SUBJECTS と同じ）
@@ -97,7 +102,7 @@ function doGet() {
 /**
  * 画面（GitHub Pages）から、送信を受け取る。
  * - 持ち主：{ token: 合言葉, ops: 変更のリスト } → 保存して、最新のデータと見る用の鍵を返す
- * - 見る人：{ view: 見る用の鍵 } → 読むだけ。ops がついていても、何も保存しない
+ * - 見る人：{ view: 見る用の鍵 } → 読むだけ。ops がついていても、何も保存しない。非公開のときは何も返さない
  * 合言葉や鍵が合わなければ、何もせずに断る。
  */
 function doPost(e) {
@@ -111,6 +116,8 @@ function doPost(e) {
     if (body.view !== undefined) {
       var viewKey = props.getProperty(VIEW_PROP);
       if (!viewKey || !safeEqual_(String(body.view || ''), viewKey)) return json_({ ok: false, error: 'auth' });
+      // 非公開のときは、記録を何も返さない
+      if (!readShare_().open) return json_({ ok: false, error: 'closed' });
       return json_({ ok: true, data: viewData_() });
     }
 
@@ -149,6 +156,15 @@ function readTable_(name) {
   return sheet.getRange(2, 1, last - 1, def.cols.length).getValues()
     .map(function (row) { return fromRow_(def, row); })
     .filter(function (r) { return r.id && !r.deleted; });
+}
+
+/** 見る用リンクの公開・非公開（まだ一度も切りかえていなければ、公開中） */
+function readShare_() {
+  return cleanShare_(parseJson_(PropertiesService.getScriptProperties().getProperty(SHARE_PROP)));
+}
+
+function cleanShare_(v) {
+  return { open: !(v && v.open === false), updatedAt: num_(v && v.updatedAt) };
 }
 
 /** 見る用の鍵を返す。まだなければ作る（前の版で setup した人も、そのまま使えるように） */
@@ -241,6 +257,8 @@ function sync(ops) {
     var props = PropertiesService.getScriptProperties();
     var timer = parseJson_(props.getProperty('timer'));
     var timerChanged = false;
+    var share = readShare_();
+    var shareChanged = false;
 
     (ops || []).forEach(function (op) {
       if (!op || typeof op !== 'object') return;
@@ -251,6 +269,9 @@ function sync(ops) {
           timer = cleanTimer_(op.value);
           timerChanged = true;
         }
+      } else if (op.type === 'share' && op.value && num_(op.value.updatedAt) >= share.updatedAt) {
+        share = cleanShare_(op.value);
+        shareChanged = true;
       }
     });
 
@@ -258,6 +279,7 @@ function sync(ops) {
       saveTable_(db[name]);
     });
     if (timerChanged) props.setProperty('timer', JSON.stringify(timer));
+    if (shareChanged) props.setProperty(SHARE_PROP, JSON.stringify(share));
     SpreadsheetApp.flush();
 
     return {
@@ -265,6 +287,7 @@ function sync(ops) {
       sessions: liveRecords_(db.sessions),
       rewards: liveRecords_(db.rewards),
       timer: timer,
+      share: share,
       spreadsheetUrl: SpreadsheetApp.getActive().getUrl(),
       apiVersion: API_VERSION,
       serverTime: Date.now()

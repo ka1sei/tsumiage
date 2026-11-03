@@ -109,7 +109,7 @@ const Store = (() => {
   let fresh = false; // この画面を開いてから、1回でもサーバーから最新を受け取れたか
   let spreadsheetUrl = '';
   let shareKey = ''; // 持ち主の画面で使う、見る用リンクの鍵
-  let serverVersion = 0; // Apps Script の版（2 から「読書」の種類を保存できる）
+  let serverVersion = 0; // Apps Script の版（2 から「読書」の種類、3 から見る用リンクの公開・非公開を保存できる）
   let token = lsGet(TOKEN_KEY);
   let status = { kind: usesServer ? 'syncing' : mode, lastSync: 0, message: '' };
   const listeners = { data: new Set(), status: new Set() };
@@ -118,7 +118,11 @@ const Store = (() => {
     return { state: 'idle', subjectIds: [], subjectId: '', startedAt: null, runningSince: null, elapsedMs: 0, updatedAt };
   }
   function blankState() {
-    return { subjects: [], sessions: [], rewards: [], timer: idleTimer() };
+    return { subjects: [], sessions: [], rewards: [], timer: idleTimer(), share: cleanShare(null) };
+  }
+  /** 見る用リンクを公開しているか（まだ一度も切りかえていなければ、公開中） */
+  function cleanShare(v) {
+    return { open: !(v && v.open === false), updatedAt: v && Number.isFinite(Number(v.updatedAt)) ? Number(v.updatedAt) : 0 };
   }
 
   /* ---------- データの形をそろえる ---------- */
@@ -187,6 +191,7 @@ const Store = (() => {
       out[table] = rows.filter((r) => r && r.id && !r.deleted).map(clean[table]);
     }
     out.timer = cleanTimer(raw && raw.timer);
+    out.share = cleanShare(raw && raw.share);
     return out;
   }
 
@@ -240,6 +245,7 @@ const Store = (() => {
   function applyOp(op) {
     if (op.type === 'put' && clean[op.table]) applyPut(op.table, op.record);
     if (op.type === 'timer' && num(op.value.updatedAt) >= state.timer.updatedAt) state.timer = cleanTimer(op.value);
+    if (op.type === 'share' && num(op.value.updatedAt) >= state.share.updatedAt) state.share = cleanShare(op.value);
   }
 
   /** 端末どうしの時計のずれがあっても、今の変更が勝つように少し進める */
@@ -296,6 +302,11 @@ const Store = (() => {
 
   function setTimer(t) {
     commit({ type: 'timer', value: { ...cleanTimer(t), updatedAt: stamp(state.timer.updatedAt) } });
+  }
+
+  /** 見る用リンクの公開・非公開を切りかえる */
+  function setShare(open) {
+    commit({ type: 'share', value: { open: !!open, updatedAt: stamp(state.share.updatedAt) } });
   }
 
   /* ---------- スプレッドシートとの同期 ---------- */
@@ -355,8 +366,9 @@ const Store = (() => {
     }, (err) => {
       inFlight = false;
       const auth = !!(err && err.auth);
-      // 見る用の鍵が作り直されていたら、前に覚えた記録も見せない
-      if (mode === 'view' && auth) {
+      const closed = !!(err && err.closed);
+      // 見る用の鍵が作り直されていたり、非公開になっていたりしたら、前に覚えた記録も見せない
+      if (mode === 'view' && (auth || closed)) {
         const wasReady = ready;
         state = blankState();
         ready = false;
@@ -364,9 +376,9 @@ const Store = (() => {
         lsDel(VIEW_CACHE_KEY);
         if (wasReady) emit('data');
       }
-      setStatus({ kind: 'error', message: (err && err.message) || String(err), auth });
-      // 合言葉や鍵が違うときは、くり返しても意味がない
-      if (auth) return;
+      setStatus({ kind: 'error', message: (err && err.message) || String(err), auth, closed });
+      // 合言葉や鍵が違うときは、くり返しても意味がない。非公開のときは、1分ごとの確認で公開に戻ったかを見る
+      if (auth || closed) return;
       retryTimer = setTimeout(sync, retryDelay);
       retryDelay = Math.min(retryDelay * 2, 120000);
     });
@@ -378,7 +390,7 @@ const Store = (() => {
       google.script.run.withSuccessHandler(onOk).withFailureHandler(onFail).sync(ops);
       return;
     }
-    const fail = (message, auth = false) => onFail(Object.assign(new Error(message), { auth }));
+    const fail = (message, auth = false, closed = false) => onFail(Object.assign(new Error(message), { auth, closed }));
     // 見る人は鍵だけを送る（変更は送らない）
     const payload = mode === 'view' ? { view: viewKey } : { token, ops };
     // text/plain にすると、事前の確認（プリフライト）が要らず、そのまま送れる
@@ -394,6 +406,7 @@ const Store = (() => {
       .then((body) => {
         if (body && body.ok) onOk(body.data);
         else if (body && body.error === 'auth') fail(mode === 'view' ? 'この見る用リンクは使えなくなっています' : '合言葉が違います', true);
+        else if (body && body.error === 'closed') fail('現在非公開中です', false, true);
         else fail((body && body.message) || 'サーバー側でエラーが起きました');
       })
       .catch((e) => fail(e instanceof TypeError ? 'つながりませんでした（電波かURLを確かめてください）' : e.message));
@@ -492,7 +505,7 @@ const Store = (() => {
   }
 
   return {
-    init, put, remove, setTimer, batch, sync, idleTimer, exportData, importData,
+    init, put, remove, setTimer, setShare, batch, sync, idleTimer, exportData, importData,
     on(type, fn) { listeners[type].add(fn); },
     get state() { return state; },
     get mode() { return mode; },

@@ -495,7 +495,7 @@ test('GAS：見る用の鍵で、記録（メモも）・ごほうび・タイ�
   eq(res.data.rewards.map((r) => r.title), ['ランチ']);
   eq(res.data.subjects.length, 11);
   eq(res.data.subjects.find((s) => s.id === 'sub_stock').kind, 'reading', '種類も届く');
-  eq(res.data.apiVersion, 2, '版も届く');
+  eq(res.data.apiVersion, 3, '版も届く');
   eq([res.data.timer.state, res.data.timer.subjectIds], ['running', ['sub_html']]);
   ok(!('spreadsheetUrl' in res.data), 'スプレッドシートのURLが入っている');
   ok(!('viewKey' in res.data), '鍵が入っている');
@@ -569,7 +569,7 @@ test('GAS：種類が保存され、知らない種類は勉強になる。シ�
   eq(res.subjects.find((s) => s.id === 'sub_g1').kind, 'reading');
   eq(res.subjects.find((s) => s.id === 'sub_g2').kind, 'study', '知らない種類');
   eq(res.rewards[0].kind, 'reading');
-  eq(res.apiVersion, 2);
+  eq(res.apiVersion, 3);
   eq(GasMock.spreadsheet.getSheetByName('科目').data[0][7], '種類（study=勉強、reading=読書）', '科目の見出し');
   eq(GasMock.spreadsheet.getSheetByName('ごほうび').data[0][7], '種類（study=勉強、reading=読書）', 'ごほうびの見出し');
 });
@@ -624,4 +624,34 @@ test('GAS：見る用の読み込みは、前の版のシート（種類の列�
   eq(res.data.subjects.map((s) => [s.id, s.kind]), [['sub_html', 'study']]);
   eq(old.data[0].length, 7, '見出しを足していない');
   eq(old.data.length, 2, '科目を足していない');
+});
+
+/* ---------- 見る用リンクの公開・非公開 ---------- */
+
+test('GAS：見る用リンクは最初は公開中。非公開にすると、見る人には何も返さない', () => {
+  GasMock.reset();
+  GAS.setup();
+  const token = GasMock.props.apiToken;
+  const key = GasMock.props.viewKey;
+  post({ token, ops: [{ type: 'put', table: 'sessions', record: { id: 'ses_s', subjectId: 'sub_html', start: 1, end: 2, seconds: 60, memo: 'ひみつのメモ', updatedAt: 5 } }] });
+  eq(post({ token, ops: [] }).data.share, { open: true, updatedAt: 0 }, '最初は公開中');
+  eq(post({ view: key }).ok, true, '公開中は見られる');
+  eq(post({ token, ops: [{ type: 'share', value: { open: false, updatedAt: 10 } }] }).data.share.open, false);
+  const closed = post({ view: key });
+  eq(closed, { ok: false, error: 'closed' }, '非公開なのに何か返している');
+  ok(!JSON.stringify(closed).includes('ひみつ'), 'メモが入っている');
+  eq(post({ view: 'ちがう' }).error, 'auth', '鍵がちがう人には、非公開かどうかも教えない');
+  post({ token, ops: [{ type: 'share', value: { open: true, updatedAt: 5 } }] });
+  eq(post({ view: key }).error, 'closed', '古い切りかえで公開に戻ってしまう');
+  post({ token, ops: [{ type: 'share', value: { open: true, updatedAt: 20 } }] });
+  eq(post({ view: key }).ok, true, '公開に戻しても見られない');
+  eq(GasMock.props.viewKey, key, '切りかえで鍵が変わった');
+});
+
+test('GAS：見る人の送信では、公開・非公開を変えられない', () => {
+  GasMock.reset();
+  GAS.setup();
+  const key = GasMock.props.viewKey;
+  post({ view: key, ops: [{ type: 'share', value: { open: false, updatedAt: 99 } }] });
+  eq(post({ view: key }).ok, true, '見る人が非公開にできてしまう');
 });

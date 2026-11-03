@@ -58,7 +58,7 @@
     ok(Store.ready, '準備できていない');
     ok(Store.subjects(false, 'study').length === 8, `科目 ${Store.subjects(false, 'study').length}`);
     ok(Store.subjects(false, 'reading').map((s) => s.name).join() === '株,投資信託,ビットコイン', 'ジャンルが届いていない');
-    ok(Store.serverVersion === 2, `Apps Script の版 ${Store.serverVersion}`);
+    ok(Store.serverVersion === 3, `Apps Script の版 ${Store.serverVersion}`);
     ok(Store.status.kind === 'synced', `状態 ${Store.status.kind}`);
     ok(Store.spreadsheetUrl.includes('docs.google.com'), 'スプレッドシートのURLがない');
   });
@@ -158,7 +158,18 @@
     ok(server.sessions.some((s) => s.id === 'ses_read1'), '読書の記録が届いていない');
     ok(Store.subject('sub_novel').kind === 'reading' && Store.state.rewards.find((r) => r.id === 'rew_book').kind === 'reading', '同期のあとも画面側で種類が残る');
     const cached = JSON.parse(localStorage.getItem('tsumiage:data:v1'));
-    ok(cached.serverVersion === 2, 'Apps Script の版を端末に覚えていない');
+    ok(cached.serverVersion === 3, 'Apps Script の版を端末に覚えていない');
+  });
+
+  await step('見る用リンクの公開・非公開が、スプレッドシート側に届く', async () => {
+    ok(Store.state.share.open === true, '最初は公開中ではない');
+    Store.setShare(false);
+    ok(Store.state.share.open === false, '画面ですぐに変わらない');
+    await sleep(700);
+    ok(GAS.sync([]).share.open === false, '非公開が届いていない');
+    Store.setShare(true);
+    await sleep(700);
+    ok(GAS.sync([]).share.open === true && Store.state.share.open === true, '公開に戻らない');
   });
 
   const pass = results.filter((r) => r[0] === 'PASS').length;

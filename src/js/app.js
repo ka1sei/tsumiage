@@ -42,6 +42,7 @@
     eye: svg('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>'),
     copy: svg('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>'),
     book: svg('<path d="M12 6.5C10.2 5.2 7.6 4.6 4 4.8v13c3.6-.2 6.2.4 8 1.7 1.8-1.3 4.4-1.9 8-1.7v-13c-3.6-.2-6.2.4-8 1.7zM12 6.5v13"/>'),
+    lock: svg('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>'),
     study: svg('<path d="M2.5 9.5 12 5l9.5 4.5L12 14z"/><path d="M6.5 11.6V16c1.5 1.4 3.4 2 5.5 2s4-.6 5.5-2v-4.4M21.5 9.5V15"/>'),
   };
   const MARK = `<svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
@@ -706,10 +707,23 @@
   function shareHTML() {
     if (!Store.usesToken) return '';
     const url = Store.shareKey ? shareUrl(Store.shareKey) : '';
+    const open = Store.state.share.open;
+    // 切りかえは Apps Script が新しい版（3 から）のときだけ。古い版だと、オフにしても見る人を止められないため
+    const canSwitch = Store.serverVersion >= 3;
+    const toggle = canSwitch ? `
+        <button type="button" class="switch" role="switch" aria-checked="${open}" aria-describedby="share-state" data-action="toggle-share">
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+          <span class="switch__label">${open ? '公開中' : '非公開中'}</span>
+        </button>`
+      : Store.fresh ? '<p class="notice">公開・非公開を切りかえるには、Apps Script を新しい版にしてください（「セットアップ手順.md」の「アプリを新しくしたとき」）。</p>' : '';
+    const about = !canSwitch || open
+      ? `このリンクを開いた人は、記録とごほうびを見られます。<br>${hasReading() ? 'いま勉強中・読書中かどうか' : 'いま勉強中かどうか'}と、メモも見えます。<br>編集はできません。`
+      : 'いまは、リンクを開いても記録は見えません（「現在非公開中です」と出ます）。<br>オンにすると、同じリンクでまた見られます。';
     return `
       <section class="panel" aria-labelledby="share-h">
         <div class="sec-head"><h2 class="sec-title" id="share-h">見る用リンク</h2></div>
-        <p class="help">このリンクを開いた人は、記録とごほうびを見られます。<br>${hasReading() ? 'いま勉強中・読書中かどうか' : 'いま勉強中かどうか'}と、メモも見えます。<br>編集はできません。</p>
+        ${toggle}
+        <p class="help" id="share-state">${about}</p>
         ${url ? `
         <input type="text" class="share-url" id="share-url" value="${esc(url)}" readonly aria-label="見る用リンク">
         <div class="btn-row">
@@ -825,6 +839,15 @@
 
   function loadingHTML() {
     const failed = Store.status.kind === 'error';
+    if (VIEW && Store.status.closed) {
+      // 非公開のときは、誰のページかも出さない
+      return `
+      <div class="loading closed" role="status">
+        <span class="closed__icon" aria-hidden="true">${ICON.lock}</span>
+        <p class="closed__title">このページは、現在非公開中です</p>
+        <p class="help">公開されると、<br>このページで見られるようになります。</p>
+      </div>`;
+    }
     if (VIEW) {
       return `
       <div class="loading" role="status">
@@ -834,7 +857,7 @@
           : failed
           ? `<p>記録を読み込めませんでした。</p><p class="help">${esc(Store.status.message)}</p>
              <button type="button" class="btn btn--primary" data-action="sync-now">${ICON.sync}もう一度読み込む</button>`
-          : `<p>${esc(VIEW_TITLE)}を読み込んでいます。</p>`}
+          : '<p>記録を読み込んでいます。</p>'}
       </div>`;
     }
     return `
@@ -873,7 +896,8 @@
     let cls = '';
     if (VIEW) {
       // 見るだけの画面：ふだんは「見るだけ」。1分ごとの読み込みでは、表示を変えない（ちらつかせない）
-      if (s.kind === 'error') { icon = ICON.alert; text = s.auth ? 'リンクが使えません' : 'つながりません'; cls = ' is-error'; }
+      if (s.kind === 'error' && s.closed) { icon = ICON.lock; text = '非公開中'; }
+      else if (s.kind === 'error') { icon = ICON.alert; text = s.auth ? 'リンクが使えません' : 'つながりません'; cls = ' is-error'; }
       else if (!Store.fresh) { icon = ICON.sync; text = '読み込み中'; cls = ' is-syncing'; }
       else { icon = ICON.eye; text = '見るだけ'; cls = ' is-view'; }
       el.className = `sync${cls}`;
@@ -920,8 +944,14 @@
     document.body.dataset.route = route;
     renderNav();
     renderSync();
-    if (!Store.ready) {
+    if (VIEW) {
+      // 見る人には、最新を受け取れるまで（非公開でないと分かるまで）、名前も記録も出さない
+      $('.brand__name').textContent = Store.fresh ? VIEW_TITLE : 'つみあげ';
+      document.body.classList.toggle('is-closed', !!Store.status.closed);
+    }
+    if (!Store.ready || (VIEW && !Store.fresh)) {
       view.innerHTML = loadingHTML();
+      if (VIEW) document.title = 'つみあげ';
       shownNow = '';
       return;
     }
@@ -1502,6 +1532,11 @@
       else navigate('settings');
     },
     'sync-now'() { Store.sync(); },
+    'toggle-share'() {
+      const open = !Store.state.share.open;
+      Store.setShare(open);
+      toast(open ? '見る用リンクを公開しました' : '見る用リンクを非公開にしました');
+    },
     async 'copy-share'() {
       if (!Store.shareKey) return;
       const url = shareUrl(Store.shareKey);
@@ -1634,7 +1669,6 @@
   // 見るだけの画面：名前を出して、ロゴから記録の画面へ戻れるようにする
   if (VIEW) {
     document.body.classList.add('is-view');
-    $('.brand__name').textContent = VIEW_TITLE;
     $('.brand').setAttribute('href', `#/${ROUTES[0].id}`);
   }
   $('#brand-mark').innerHTML = MARK;
